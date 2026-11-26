@@ -1,0 +1,117 @@
+// OpenCL C device ABI for the Recursive Counter-Winding Hopf Torus.
+// Must match 3dEpiSculpTMorph/RecursiveHopfTorusGpuAbi.h byte-for-byte.
+
+#ifndef EPI_RECURSIVE_HOPF_TORUS_ABI_CLH
+#define EPI_RECURSIVE_HOPF_TORUS_ABI_CLH
+
+#define EPI_RECURSIVE_HOPF_ABI_VERSION 1U
+#define EPI_RECURSIVE_HOPF_RECIPE_BYTES 64U
+#define EPI_RECURSIVE_HOPF_CIRCLE_BYTES 64U
+#define EPI_RECURSIVE_HOPF_CHILD_MAP_BYTES 96U
+#define EPI_RECURSIVE_HOPF_GRAMMAR_HEADER_BYTES 64U
+#define EPI_RECURSIVE_HOPF_INSTANCE_BYTES 80U
+
+#define EPI_RECURSIVE_HOPF_MAX_FIBERS_PER_FAMILY 8U
+#define EPI_RECURSIVE_HOPF_MAX_LOGICAL_DEPTH 8U
+#define EPI_RECURSIVE_HOPF_MAX_ROOT_CIRCLES 16U
+#define EPI_RECURSIVE_HOPF_MAX_CHILDREN_PER_NODE 128U
+
+#define EPI_RECURSIVE_HOPF_FLAG_WOVEN_MODE 0x00000001U
+#define EPI_RECURSIVE_HOPF_FLAG_CONFORMAL_SCALE 0x00000002U
+#define EPI_RECURSIVE_HOPF_FLAG_STRICT_CLEARANCE 0x00000004U
+
+#define EPI_RECURSIVE_HOPF_PLACEMENT_UNIFORM 0U
+#define EPI_RECURSIVE_HOPF_PLACEMENT_CONFORMAL 1U
+#define EPI_RECURSIVE_HOPF_PLACEMENT_CLEARANCE 2U
+
+typedef struct __attribute__((aligned(16))) {
+    uint abiVersion;
+    uint byteSize;
+    uint fibersPerFamily;
+    uint logicalDepth;
+
+    float plusInitialRadians;
+    float plusRadiansPerSecond;
+    float minusInitialRadians;
+    float minusRadiansPerSecond;
+
+    float childScale;
+    float childTwistRadians;
+    float childNormalOffset;
+    float fiberRadius;
+
+    float conformalScaleExponent;
+    float weaveAmplitude;
+    uint flags;
+    uint placementMode;
+} RecursiveHopfRecipeGpu;
+
+typedef struct __attribute__((aligned(16))) {
+    float4 centerRadius;
+    float4 axisX;
+    float4 axisY;
+    float4 axisZ;
+} RecursiveHopfCircleGpu;
+
+typedef struct __attribute__((aligned(16))) {
+    float4 translationScale;
+    float4 axisX;
+    float4 axisY;
+    float4 axisZ;
+    float4 crossingPosition;
+    uint plusFiber;
+    uint minusFiber;
+    uint branch;
+    uint childIndex;
+} RecursiveHopfChildMapGpu;
+
+typedef struct __attribute__((aligned(16))) {
+    uint abiVersion;
+    uint byteSize;
+    uint generation;
+    uint rootCircleCount;
+
+    uint childrenPerNode;
+    uint logicalDepth;
+    uint flags;
+    uint reserved0;
+
+    float domainTime;
+    float plusPhase;
+    float minusPhase;
+    float subtreeRadius;
+
+    ulong logicalNodes;
+    ulong logicalFibers;
+} RecursiveHopfGrammarHeaderGpu;
+
+typedef struct __attribute__((aligned(16))) {
+    RecursiveHopfGrammarHeaderGpu header;
+    RecursiveHopfRecipeGpu recipe;
+    RecursiveHopfCircleGpu rootCircles[EPI_RECURSIVE_HOPF_MAX_ROOT_CIRCLES];
+    RecursiveHopfChildMapGpu children[EPI_RECURSIVE_HOPF_MAX_CHILDREN_PER_NODE];
+} RecursiveHopfGrammarGpu;
+
+typedef struct __attribute__((aligned(16))) {
+    float4 centerRadius;
+    float4 axisX;
+    float4 axisY;
+    float4 axisZ;
+    uint nodeIdLow;
+    uint depth;
+    uint chirality;
+    uint fiberIndex;
+} RecursiveHopfInstanceGpu;
+
+inline int epi_recursive_hopf_recipe_valid(__constant const RecursiveHopfRecipeGpu* r) {
+    if (r == 0) return 0;
+    if (r->abiVersion != EPI_RECURSIVE_HOPF_ABI_VERSION) return 0;
+    if (r->byteSize != EPI_RECURSIVE_HOPF_RECIPE_BYTES) return 0;
+    if (r->fibersPerFamily == 0U || r->fibersPerFamily > EPI_RECURSIVE_HOPF_MAX_FIBERS_PER_FAMILY) return 0;
+    if (r->logicalDepth > EPI_RECURSIVE_HOPF_MAX_LOGICAL_DEPTH) return 0;
+    if (!(r->childScale > 0.0f && r->childScale < 1.0f)) return 0;
+    if (!(r->fiberRadius > 0.0f)) return 0;
+    return 1;
+}
+
+#endif // EPI_RECURSIVE_HOPF_TORUS_ABI_CLH

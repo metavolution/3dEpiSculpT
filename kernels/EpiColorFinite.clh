@@ -1,0 +1,7 @@
+#ifndef EPI_COLOR_FINITE_CLH
+#define EPI_COLOR_FINITE_CLH
+// Explicit color components require strict build options: finite-only math
+// can erase these checks (including equivalent bit-based classifiers).
+inline int epi_color_is_finite(float value) { return (as_uint(value) & 0x7f800000u) != 0x7f800000u; }
+inline int3 epi_color_finite_mask(float3 value) { return (as_uint3(value) & (uint3)(0x7f800000u)) != (uint3)(0x7f800000u); }
+#endif

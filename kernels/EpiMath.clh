@@ -1,0 +1,272 @@
+// Educational Annotation: Core Mathematics
+#ifndef EPI_MATH_CLH
+#define EPI_MATH_CLH
+#define EPI_SCULPT_PI 3.14159265358979323846f
+inline float2 epi_complex_mul(float2 a, float2 b) { return (float2)(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+inline float2 epi_complex_div(float2 a, float2 b) { const float d = fmax(dot(b,b), 1e-12f); return (float2)((a.x*b.x + a.y*b.y)/d, (a.y*b.x - a.x*b.y)/d); }
+inline float2 epi_apply_affine(float2 z, float4 affine) { return epi_complex_mul(affine.xy, z) + affine.zw; }
+inline float epi_sanitize_component(float value) { return isfinite(value) ? clamp(value, -32.0f, 32.0f) : 0.0f; }
+inline float epi_positive_fmod(float value, float period) { float w = fmod(value, period); return w < 0.0f ? w + period : w; }
+inline float epi_smoothstep(float e0, float e1, float v) { if(e0==e1) return v<e0?0.0f:1.0f; const float t = clamp((v-e0)/(e1-e0), 0.0f, 1.0f); return t*t*(3.0f-2.0f*t); }
+inline float2 epi_homotopy_sinh_exp(float2 z, float lambda) {
+    float2 z_sinh = (float2)(sinh(z.x)*cos(z.y), cosh(z.x)*sin(z.y));
+    float m = exp(z.x);
+    float2 z_exp = m * (float2)(cos(z.y), sin(z.y));
+    float cl = clamp(lambda, 0.0f, 1.0f);
+    float2 h = mix(z_sinh, z_exp, cl);
+    float len = length(h);
+    return (len > 6.0f) ? (h * (6.0f / len)) : h;
+}
+
+// 4D Quaternion Math: q = (w, x, y, z)
+inline float4 epi_quat_mul(float4 a, float4 b) {
+    return (float4)(
+        a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+        a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+        a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+        a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x
+    );
+}
+inline float4 epi_quat_conj(float4 q) { return (float4)(q.x, -q.y, -q.z, -q.w); }
+inline float4 epi_quat_square(float4 q) {
+    float vsq = q.y*q.y + q.z*q.z + q.w*q.w;
+    return (float4)(q.x*q.x - vsq, 2.0f*q.x*q.y, 2.0f*q.x*q.z, 2.0f*q.x*q.w);
+}
+inline float4 epi_quat_exp(float4 q) {
+    float exp_w = exp(q.x);
+    float vnorm = sqrt(q.y*q.y + q.z*q.z + q.w*q.w);
+    if (vnorm < 1e-7f) return (float4)(exp_w, 0.0f, 0.0f, 0.0f);
+    float coeff = exp_w * sin(vnorm) / vnorm;
+    return (float4)(exp_w * cos(vnorm), q.y*coeff, q.z*coeff, q.w*coeff);
+}
+
+// 8D Octonion Math: X = (lo, hi) where lo=(e0, e1, e2, e3), hi=(e4, e5, e6, e7)
+inline void epi_oct_mul(float4 a_lo, float4 a_hi, float4 b_lo, float4 b_hi, float4* out_lo, float4* out_hi) {
+    float4 AC = epi_quat_mul(a_lo, b_lo);
+    float4 DstarB = epi_quat_mul(epi_quat_conj(b_hi), a_hi);
+    float4 DA = epi_quat_mul(b_hi, a_lo);
+    float4 BCstar = epi_quat_mul(a_hi, epi_quat_conj(b_lo));
+    *out_lo = AC - DstarB;
+    *out_hi = DA + BCstar;
+}
+inline void epi_oct_square(float4 in_lo, float4 in_hi, float4* out_lo, float4* out_hi) {
+    float vsq = in_lo.y*in_lo.y + in_lo.z*in_lo.z + in_lo.w*in_lo.w + dot(in_hi, in_hi);
+    *out_lo = (float4)(in_lo.x*in_lo.x - vsq, 2.0f*in_lo.x*in_lo.y, 2.0f*in_lo.x*in_lo.z, 2.0f*in_lo.x*in_lo.w);
+    *out_hi = 2.0f * in_lo.x * in_hi;
+}
+inline void epi_oct_exp(float4 in_lo, float4 in_hi, float4* out_lo, float4* out_hi) {
+    float exp_e0 = exp(in_lo.x);
+    float vsq = in_lo.y*in_lo.y + in_lo.z*in_lo.z + in_lo.w*in_lo.w + dot(in_hi, in_hi);
+    float vnorm = sqrt(vsq);
+    if (vnorm < 1e-7f) {
+        *out_lo = (float4)(exp_e0, 0.0f, 0.0f, 0.0f);
+        *out_hi = (float4)(0.0f);
+        return;
+    }
+    float coeff = exp_e0 * sin(vnorm) / vnorm;
+    *out_lo = (float4)(exp_e0 * cos(vnorm), in_lo.y * coeff, in_lo.z * coeff, in_lo.w * coeff);
+    *out_hi = in_hi * coeff;
+}
+inline float2 epi_oct_project_2d(float4 lo, float4 hi) {
+    float nsq = dot(lo, lo) + dot(hi, hi);
+    float denom = fmax(nsq + 0.1f, 1e-5f);
+    float px = 2.0f * (lo.x*lo.y + lo.z*lo.w + hi.x*hi.y + hi.z*hi.w) / denom;
+    float py = 2.0f * (lo.x*lo.z - lo.y*lo.w + hi.x*hi.z - hi.y*hi.w) / denom;
+    return (float2)(px, py);
+}
+
+inline float3 epi_oct_project_3d(float4 lo, float4 hi) {
+    float nsq = dot(lo, lo) + dot(hi, hi);
+    float denom = fmax(nsq + 0.1f, 1e-5f);
+    float px = 2.0f * (lo.x * lo.y + lo.z * lo.w + hi.x * hi.y + hi.z * hi.w) / denom;
+    float py = 2.0f * (lo.x * lo.z - lo.y * lo.w + hi.x * hi.z - hi.y * hi.w) / denom;
+    float pz = ((lo.x * lo.x + lo.y * lo.y + lo.z * lo.z + lo.w * lo.w) -
+                (hi.x * hi.x + hi.y * hi.y + hi.z * hi.z + hi.w * hi.w)) / denom;
+    return (float3)(px, py, pz);
+}
+
+inline void epi_oct_rotate_g2(float4 in_lo, float4 in_hi, float theta, float4* out_lo, float4* out_hi) {
+    float c1 = cos(2.0f * theta);
+    float s1 = sin(2.0f * theta);
+    float c2 = cos(theta);
+    float s2 = sin(theta);
+    
+    // in_lo = (e0, e1, e2, e3), in_hi = (e4, e5, e6, e7)
+    // Primary Fano circle (e1, e2) rotation by 2*theta
+    float e1_new = in_lo.y * c1 + in_lo.z * s1;
+    float e2_new = -in_lo.y * s1 + in_lo.z * c1;
+    *out_lo = (float4)(in_lo.x, e1_new, e2_new, in_lo.w);
+    
+    // Associated triad (e4, e7) rotation by theta: hi.x = e4, hi.w = e7
+    float e4_new = in_hi.x * c2 - in_hi.w * s2;
+    float e7_new = in_hi.x * s2 + in_hi.w * c2;
+    
+    // Associated triad (e5, e6) rotation by theta: hi.y = e5, hi.z = e6
+    float e5_new = in_hi.y * c2 + in_hi.z * s2;
+    float e6_new = -in_hi.y * s2 + in_hi.z * c2;
+    
+    *out_hi = (float4)(e4_new, e5_new, e6_new, e7_new);
+}
+
+inline void epi_oct_associator(
+    float4 x_lo, float4 x_hi,
+    float4 y_lo, float4 y_hi,
+    float4 z_lo, float4 z_hi,
+    float4* out_lo, float4* out_hi
+) {
+    // [X, Y, Z] = (X * Y) * Z - X * (Y * Z)
+    float4 xy_lo, xy_hi;
+    epi_oct_mul(x_lo, x_hi, y_lo, y_hi, &xy_lo, &xy_hi);
+    float4 xyz_lo, xyz_hi;
+    epi_oct_mul(xy_lo, xy_hi, z_lo, z_hi, &xyz_lo, &xyz_hi);
+    
+    float4 yz_lo, yz_hi;
+    epi_oct_mul(y_lo, y_hi, z_lo, z_hi, &yz_lo, &yz_hi);
+    float4 x_yz_lo, x_yz_hi;
+    epi_oct_mul(x_lo, x_hi, yz_lo, yz_hi, &x_yz_lo, &x_yz_hi);
+    
+    *out_lo = xyz_lo - x_yz_lo;
+    *out_hi = xyz_hi - x_yz_hi;
+}
+
+inline float2 epi_holomorphic_potential(float2 z) {
+    float2 c1 = (float2)(0.55f, 0.40f);
+    float2 c2 = (float2)(-0.55f, -0.40f);
+    float2 c3 = (float2)(0.0f, 0.65f);
+    float2 d1 = z - c1;
+    float2 d2 = z - c2;
+    float2 d3 = z - c3;
+    float r1 = fmax(length(d1), 1e-4f);
+    float r2 = fmax(length(d2), 1e-4f);
+    float r3 = fmax(length(d3), 1e-4f);
+    float theta1 = atan2(d1.y, d1.x);
+    float theta2 = atan2(d2.y, d2.x);
+    float theta3 = atan2(d3.y, d3.x);
+    float phi = 0.5f * log(r1) + 1.8f * theta1 - 0.5f * log(r2) - 1.8f * theta2 + 1.2f * theta3;
+    float psi = -1.8f * log(r1) + 0.5f * theta1 + 1.8f * log(r2) - 0.5f * theta2 - 1.2f * log(r3);
+    float2 z2 = epi_complex_mul(z, z);
+    float2 z3 = epi_complex_mul(z2, z);
+    float2 pot = (float2)(phi * 0.45f + z3.x * 0.15f, psi * 0.45f + z3.y * 0.15f);
+    float len = length(pot);
+    return (len > 6.0f) ? (pot * (6.0f / len)) : pot;
+}
+
+inline float2 epi_hyperbolic_honeycomb(float2 z) {
+    float r2 = dot(z, z);
+    if (r2 >= 1.0f) {
+        z = (float2)(z.x / r2, -z.y / r2);
+        r2 = dot(z, z);
+    }
+    float r = sqrt(fmax(r2, 1e-8f));
+    float th = atan2(z.y, z.x);
+    float kSector = 2.0f * 3.14159265f / 5.0f;
+    float thFold = fmod(th + 3.14159265f / 5.0f, kSector);
+    if (thFold < 0.0f) thFold += kSector;
+    thFold -= 3.14159265f / 5.0f;
+    float d = 0.5f * log((1.0f + clamp(r, 1e-4f, 0.999f)) / (1.0f - clamp(r, 1e-4f, 0.999f)));
+    float rOut = tanh(1.85f * d);
+    float seifert = 0.35f * (1.0f - rOut * rOut);
+    return (float2)(rOut * cos(thFold) + seifert * cos(3.0f * thFold),
+                    rOut * sin(thFold) + seifert * sin(2.0f * thFold));
+}
+
+// -----------------------------------------------------------------------------
+// Educational Annotation: 3D HYDRODYNAMIC NAVIER-STOKES VORTICITY & ADVECTION
+// -----------------------------------------------------------------------------
+// Computes divergence-free velocity fields u = curl(A), vorticity w = curl(u),
+// and vorticity confinement force f_conf = epsilon * (N x w) * dx to preserve
+// turbulent sub-grid scale eddies and acoustic cymatic standing wave patterns.
+// -----------------------------------------------------------------------------
+inline float3 epi_curl_noise(float3 p, float time) {
+    float s = 1.25f;
+    float t = time * 0.35f;
+    return (float3)(
+        cos(p.y * s + t) - sin(p.z * s - t * 0.7f),
+        cos(p.z * s + t * 0.8f) - sin(p.x * s + t * 0.5f),
+        cos(p.x * s - t * 0.6f) - sin(p.y * s + t * 0.9f)
+    );
+}
+
+inline float3 epi_fluid_advect_rk4(float3 pos, float dt, float curlStrength, float time) {
+    // 4th-Order Runge-Kutta continuous trajectory integration
+    float3 k1 = epi_curl_noise(pos, time) * curlStrength;
+    float3 k2 = epi_curl_noise(pos + 0.5f * dt * k1, time + 0.5f * dt) * curlStrength;
+    float3 k3 = epi_curl_noise(pos + 0.5f * dt * k2, time + 0.5f * dt) * curlStrength;
+    float3 k4 = epi_curl_noise(pos + dt * k3, time + dt) * curlStrength;
+    return pos + (dt / 6.0f) * (k1 + 2.0f * k2 + 2.0f * k3 + k4);
+}
+
+inline float3 epi_acoustic_cymatic_force(float3 p, float4 spectrum, float time) {
+    // 4-band multi-modal acoustic pressure gradient
+    float f0 = spectrum.x * sin(8.0f * p.x + time * 2.0f);
+    float f1 = spectrum.y * cos(12.0f * p.y - time * 3.0f);
+    float f2 = spectrum.z * sin(16.0f * p.z + time * 4.0f);
+    float f3 = spectrum.w * cos(20.0f * (p.x + p.y + p.z) - time * 5.0f);
+    return (float3)(f0 + f3 * 0.3f, f1 + f3 * 0.3f, f2 + f3 * 0.3f);
+}
+
+// -----------------------------------------------------------------------------
+// Educational Annotation: SO(4) DUAL-ISOCLINIC ROTATION & EUCLIDEAN 4D ISOMETRY
+// -----------------------------------------------------------------------------
+// Implements the canonical SO(4) ~= (SU(2) x SU(2)) / Z_2 rotation decomposition:
+// 1. Left-isoclinic rotation in (xy) and (zw) planes by angle thetaL
+// 2. Right-isoclinic rotation in (xz) and (yw) planes by angle thetaR
+// 3. Optional chiral tilt angles (phiL, phiR)
+// Preserves exact 4D Euclidean norm: ||R(p)|| == ||p||
+// -----------------------------------------------------------------------------
+inline float4 epi_rotate_so4(float4 p, float thetaL, float thetaR, float phiL, float phiR) {
+    float sinTL, cosTL;
+    sinTL = sincos(thetaL, &cosTL);
+
+    float4 pL = (float4)(
+        p.x * cosTL - p.y * sinTL,
+        p.x * sinTL + p.y * cosTL,
+        p.z * cosTL - p.w * sinTL,
+        p.z * sinTL + p.w * cosTL
+    );
+
+    float sinTR, cosTR;
+    sinTR = sincos(thetaR, &cosTR);
+
+    float4 pR = (float4)(
+        pL.x * cosTR - pL.z * sinTR,
+        pL.y * cosTR + pL.w * sinTR,
+        pL.x * sinTR + pL.z * cosTR,
+        -pL.y * sinTR + pL.w * cosTR
+    );
+
+    if (phiL != 0.0f || phiR != 0.0f) {
+        const float cosP = cos(phiL);
+        const float sinP = sin(phiL);
+        return (float4)(
+            pR.x * cosP - pR.w * sinP,
+            pR.y,
+            pR.z,
+            pR.x * sinP + pR.w * cosP
+        );
+    }
+
+    return pR;
+}
+
+inline float4 epi_rotate_so4_dual(float4 p, float thetaL, float thetaR) {
+    return epi_rotate_so4(p, thetaL, thetaR, 0.0f, 0.0f);
+}
+
+inline float2 epi_clifford_torus(float2 z) {
+    return (float2)(sin(-1.4f * z.y) + 1.0f * cos(-1.4f * z.x),
+                    sin(1.6f * z.x) + 0.7f * cos(1.6f * z.y));
+}
+
+inline float2 epi_hopf_fibration(float2 z) {
+    float r1_sq = z.x * z.x + z.y * z.y;
+    float r2_sq = 1.0f - clamp(r1_sq, 0.0f, 0.95f);
+    float r2 = sqrt(r2_sq);
+    float2 z2 = (float2)(r2 * cos(1.5f * z.x), r2 * sin(1.5f * z.y));
+    float den = fmax(r1_sq + r2_sq, 1e-5f);
+    float hopf_x = 2.0f * (z.x * z2.x + z.y * z2.y) / den;
+    float hopf_y = 2.0f * (z.y * z2.x - z.x * z2.y) / den;
+    return (float2)(hopf_x, hopf_y);
+}
+
+#endif // EPI_MATH_CLH

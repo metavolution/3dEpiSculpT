@@ -1,0 +1,83 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_MANDELBULB_FRACTAL (Generator ID: 15)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_mandelbulb_fractal(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    const uint activeCount = epi_world_active_count(recipe, 8192u);
+    const float norm = convert_float(index) / convert_float(max(1u, activeCount));
+    
+    const float phi = acos(1.0f - 2.0f * norm);
+    const float theta = norm * 3.14159f * 64.0f;
+    
+    float3 p0 = (float3)(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta));
+    float3 p = p0;
+    
+    const float time = frame->time * 0.1f * params->dynamics_seed.x;
+    const float power = 8.0f + 2.0f * sin(time);
+    float r = 0.0f;
+    
+    for (int j = 0; j < 6; j++) {
+        r = length(p);
+        if (r > 4.0f) break;
+        
+        float theta_mb = acos(p.y / r);
+        float phi_mb = atan2(p.z, p.x);
+        
+        float zr = pow(r, power);
+        theta_mb = theta_mb * power;
+        phi_mb = phi_mb * power;
+        
+        p = (float3)(sin(theta_mb) * cos(phi_mb), cos(theta_mb), sin(theta_mb) * sin(phi_mb)) * zr + p0;
+    }
+    
+    float trap = clamp(1.0f / (1.0f + r), 0.0f, 1.0f);
+    float scale = 0.5f * trap;
+    
+    WorldInstanceGpu inst;
+    inst.positionScale = (float4)(p * 1.5f, scale);
+    inst.orientation = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+    
+    float3 col = mix((float3)(0.1f, 0.4f, 1.0f), (float3)(1.0f, 0.2f, 0.5f), trap);
+    inst.tintEmission = (float4)(col, 1.0f * trap);
+    
+    inst.primitiveId = recipe->primitiveId;
+    inst.materialBand = (uint)(trap * convert_float(recipe->materialBandCount - 1u));
+    inst.flags = 0u;
+    inst.sourceIndex = index;
+    
+    instances[index] = inst;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_mandelbulb_fractal(index, params, frame, recipe, output->instances);
+}
+#endif

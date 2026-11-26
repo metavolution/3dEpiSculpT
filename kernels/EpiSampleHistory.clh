@@ -1,0 +1,33 @@
+#ifndef EPI_SAMPLE_HISTORY_CLH
+#define EPI_SAMPLE_HISTORY_CLH
+
+// Producer-private source-indexed history. The host clears the destination
+// before dispatch, so culled or unsampled sources remain unavailable.
+typedef struct {
+    float4 position_valid;
+    float4 velocity;
+} SculptureSourceSample;
+
+inline int epi_source_history_read(__global const uchar* raw, uint index,
+                                   __private SculptureSourceSample* result) {
+    if (!raw || index >= EPI_SCULPT_VOLUME_VOXEL_COUNT) return 0;
+    const SculptureSourceSample sample =
+        ((__global const SculptureSourceSample*)raw)[index];
+    if (sample.position_valid.w != 1.0f ||
+        !all(isfinite(sample.position_valid.xyz)) ||
+        !all(isfinite(sample.velocity.xyz))) return 0;
+    *result = sample;
+    return 1;
+}
+
+inline void epi_source_history_store(__global SculptureSourceSample* history,
+                                     uint index, float3 position, float3 velocity) {
+    if (!history || index >= EPI_SCULPT_VOLUME_VOXEL_COUNT ||
+        !all(isfinite(position)) || !all(isfinite(velocity))) return;
+    SculptureSourceSample sample;
+    sample.position_valid = (float4)(position, 1.0f);
+    sample.velocity = (float4)(velocity, 0.0f);
+    history[index] = sample;
+}
+
+#endif

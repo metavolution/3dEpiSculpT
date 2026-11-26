@@ -1,0 +1,11 @@
+#pragma once
+
+typedef struct {
+    float pos_x, pos_y, pos_z;
+    float norm_x, norm_y, norm_z;
+    float uv_u, uv_v;
+    float color_r, color_g, color_b, color_a;
+    float tan_x, tan_y, tan_z, tan_w;
+    uint joint_0, joint_1, joint_2, joint_3;
+    float weight_0, weight_1, weight_2, weight_3;
+} MgfxVertex;

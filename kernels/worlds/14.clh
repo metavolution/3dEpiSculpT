@@ -1,0 +1,103 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_KALI_SET_ORBITS (Generator ID: 14)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_kali_set_orbits(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    const uint activeCount = epi_world_active_count(recipe, 4096u);
+    const uint i = min((index * 4096u) / activeCount, 4095u);
+    
+    // Distribute on a Fibonacci sphere
+    const float golden_ratio = (1.0f + sqrt(5.0f)) / 2.0f;
+    const float theta = 2.0f * 3.14159265359f * convert_float(i) / golden_ratio;
+    const float phi = acos(1.0f - 2.0f * (convert_float(i) + 0.5f) / 4096.0f);
+    
+    float3 p0 = (float3)(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta));
+    
+    // Time evolution
+    const float time = frame->time * (0.15f + 0.1f * params->dynamics_seed.x);
+    
+    // Magic Kali Set fold parameter
+    float3 magic = (float3)(
+        0.85f + 0.15f * sin(time * 0.7f),
+        0.95f + 0.05f * cos(time * 1.1f + params->latent_w),
+        0.75f + 0.25f * sin(time * 0.4f)
+    ) * (1.0f + 0.2f * params->topologyBlend);
+    
+    float3 p = p0 * 2.5f;
+    float orbit_sum = 0.0f;
+    
+    // Fractal fold iterations
+    const int iter = 9;
+    for (int j = 0; j < iter; j++) {
+        p = fabs(p);
+        float d2 = dot(p, p);
+        if (d2 < 0.001f) d2 = 0.001f;
+        p = p / d2 - magic;
+        orbit_sum += exp(-1.0f / d2);
+    }
+    
+    float energy = orbit_sum / convert_float(iter);
+    
+    // Calculate a pseudo-tangent by folding a slightly perturbed point
+    float3 dp = p0 * 2.5f + (float3)(0.001f, 0.0f, 0.0f);
+    for (int j = 0; j < iter; j++) {
+        dp = fabs(dp);
+        float d2 = dot(dp, dp);
+        if (d2 < 0.001f) d2 = 0.001f;
+        dp = dp / d2 - magic;
+    }
+    float3 tangent = normalize(dp - p);
+    if (length(tangent) < 0.1f) tangent = (float3)(0.0f, 1.0f, 0.0f);
+    
+    // Size is related to local stretching (energy)
+    float scale = params->output_scale.y * (0.015f + 0.08f * energy);
+    
+    // Tint based on the orbit trap (orbit_sum)
+    float hue = energy * 4.0f + time * 0.1f;
+    float3 tint = epi_world_phase_colour(hue, 0.8f);
+    
+    instances[index].positionScale = (float4)(p * 0.35f, fmax(scale, 0.01f));
+    instances[index].orientation = epi_world_align_y(tangent);
+    
+    // Intense emission in the dense cluster centers
+    float emission = 0.05f + 1.5f * pown(energy, 3);
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId; // Cube
+    instances[index].materialBand = (i % 7) % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = i;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_kali_set_orbits(index, params, frame, recipe, output->instances);
+}
+#endif

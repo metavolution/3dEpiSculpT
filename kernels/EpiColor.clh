@@ -1,0 +1,266 @@
+// Educational Annotation: Perceptual OKLCH Color Harmonizer & Phenomenology Engine
+#ifndef EPI_COLOR_CLH
+#define EPI_COLOR_CLH
+
+inline float3 epi_oklch_to_rgb(float L, float C, float h_degrees) {
+    float h = h_degrees * EPI_SCULPT_PI / 180.0f;
+    float a = C * cos(h); float b = C * sin(h);
+    float l_ = L + 0.3963377774f * a + 0.2158037573f * b;
+    float m_ = L - 0.1055613458f * a - 0.0638541728f * b;
+    float s_ = L - 0.0894841775f * a - 1.2914855480f * b;
+    l_ = l_*l_*l_; m_ = m_*m_*m_; s_ = s_*s_*s_;
+    float3 rgb;
+    rgb.x =  4.0767416621f * l_ - 3.3077115913f * m_ + 0.2309699292f * s_;
+    rgb.y = -1.2684380046f * l_ + 2.6097574011f * m_ - 0.3413193965f * s_;
+    rgb.z = -0.0041960863f * l_ - 0.7034186147f * m_ + 1.7076147010f * s_;
+    float mv = fmax(rgb.x, fmax(rgb.y, rgb.z));
+    if (mv > 1.0f) rgb /= mv;
+    return clamp(rgb, 0.0f, 1.0f);
+}
+
+inline float3 epi_palette_evaluate(uint colorEffect, float materialCoord, float orbit_energy, float magnitude, float time, float chromaBreath, float lumaDrift, float hueRotation) {
+    // Autonomous Palette Agent injects base hue (hueRotation) in degrees [0, 360]
+    float h = 0.0f, c = 0.15f, l = 0.70f;
+    float u = clamp(materialCoord, 0.0f, 1.0f);
+    
+    // Dynamic Chroma Breath (pulsating saturation) and Luma Drift (luminance wave)
+    float breath = 1.0f + chromaBreath * sin(time * 3.14159f * 1.5f + u * 6.28318f);
+    float driftLuma = lumaDrift * 0.15f * cos(time * 2.0f + u * 3.14159f);
+
+    switch (colorEffect) {
+        case 1: { // DistanceHSV / Deep Orbit
+            h = fmod(u * 360.0f + magnitude * 80.0f + time * 15.0f, 360.0f);
+            c = 0.22f;
+            l = 0.65f + 0.15f * sin(orbit_energy * 3.14159f);
+            break;
+        }
+        case 2: { // ChannelSwap / Complementary OKLCH
+            float baseH = fmod(time * 25.0f + u * 180.0f, 360.0f);
+            h = (u > 0.5f) ? fmod(baseH + 180.0f, 360.0f) : baseH;
+            c = 0.18f;
+            l = 0.72f;
+            break;
+        }
+        case 3: { // Glitch / Chromatic Dispersion
+            h = fmod(u * 720.0f + orbit_energy * 120.0f + time * 45.0f, 360.0f);
+            c = 0.25f + 0.1f * sin(time * 20.0f);
+            l = (sin(u * 50.0f + time * 30.0f) > 0.5f) ? 0.90f : 0.40f;
+            break;
+        }
+        case 4: { // Thermal Hologram / Blackbody Infrared to UV
+            h = mix(15.0f, 290.0f, u);
+            c = mix(0.24f, 0.14f, u);
+            l = mix(0.35f, 0.92f, u);
+            break;
+        }
+        case 5: { // Vaporwave / Cyberpunk Cyan-Magenta-Violet
+            h = (u < 0.5f) ? mix(190.0f, 320.0f, u * 2.0f) : mix(320.0f, 270.0f, (u - 0.5f) * 2.0f);
+            c = 0.20f;
+            l = 0.75f;
+            break;
+        }
+        case 6: { // Golden Ratio / Golden Angle Spiral (phi = 137.5077 deg)
+            h = fmod(u * 137.507764f * 8.0f + time * 20.0f, 360.0f);
+            c = 0.16f;
+            l = 0.70f + 0.12f * sin(u * 6.28318f);
+            break;
+        }
+        case 7: { // Hopf Fibration / Helical Iridescence
+            h = fmod(u * 360.0f + time * 30.0f, 360.0f);
+            c = 0.22f;
+            l = 0.68f + 0.18f * cos(u * 12.56637f);
+            break;
+        }
+        case 8: { // Quaternion Curvature / Hypercomplex Flow
+            h = fmod(u * 360.0f + orbit_energy * 90.0f + magnitude * 45.0f + time * 20.0f, 360.0f);
+            c = 0.25f;
+            l = 0.72f + 0.15f * sin(orbit_energy * 6.28318f);
+            break;
+        }
+        case 9: { // Thin-Film Optical Wave Iridescence / Multi-Beam Interference
+            float opdPhase = u * 4.0f + orbit_energy * 2.0f + time * 0.15f;
+            h = fmod(opdPhase * 180.0f + 120.0f, 360.0f);
+            c = 0.28f + 0.08f * sin(opdPhase * 6.28318f);
+            l = 0.70f + 0.15f * cos(opdPhase * 6.28318f);
+            break;
+        }
+        case 10: { // Chromatic Dispersion / Physical Cauchy Wavelength Refraction
+            float dispPhase = u * 540.0f + orbit_energy * 180.0f + magnitude * 90.0f + time * 25.0f;
+            h = fmod(dispPhase, 360.0f);
+            c = 0.32f + 0.06f * sin(orbit_energy * 6.28318f);
+            l = 0.72f + 0.18f * cos(dispPhase * 0.017453f);
+            break;
+        }
+        case 11: { // Phenomenological Palette / Quasi-Periodic Spatial Waves
+            float wave1 = 0.6f * sin(6.28318f * (0.18f * u + 0.013f * time));
+            float wave2 = 0.4f * sin(6.28318f * (0.31f * u + 0.008f * time + 1.7f));
+            float hue_x = 0.20f * u * 360.0f + wave1 * 40.0f + wave2 * 30.0f;
+            float hue_dyn = orbit_energy * 60.0f; 
+            // Integrate Autonomous Palette Agent's hue (mapped into chromaBreath here as hue parameter for case 11)
+            h = fmod(hue_x + hue_dyn + time * 10.0f + hueRotation * 360.0f, 360.0f);
+            float sat_breath = 0.85f + 0.25f * sin(time * 0.12f * 6.28318f);
+            c = 0.22f * sat_breath * (0.9f + 0.2f * u);
+            l = 0.70f + 0.1f * cos(time * 0.05f * 6.28318f);
+            break;
+        }
+        case 12: { // Op-Art Isoluminance / Moiré Vibration
+            l = 0.70f;
+            c = 0.25f;
+            
+            float grid1 = sin(u * 150.0f) * cos(magnitude * 150.0f);
+            float grid2 = sin((u + 0.01f) * 148.0f) * cos((magnitude + orbit_energy * 0.05f) * 148.0f);
+            float moire = grid1 + grid2;
+            
+            float hueBase = fmod(time * 15.0f, 360.0f);
+            h = (moire > 0.0f) ? hueBase : fmod(hueBase + 180.0f, 360.0f);
+            break;
+        }
+        case 13: { // Kinetic Velocity / Doppler Fluid Shift
+            float doppler = clamp(orbit_energy * 2.5f, 0.0f, 2.0f);
+            h = fmod(240.0f - doppler * 90.0f + time * 20.0f, 360.0f); // Blue to red shift
+            c = 0.22f + 0.10f * sin(orbit_energy * 3.14159f);
+            l = 0.65f + 0.15f * clamp(doppler * 0.5f, 0.0f, 1.0f);
+            break;
+        }
+        case 14: { // Geometric Curvature / Rayleigh Optical Scattering
+            float curvature = clamp(magnitude * 0.8f + orbit_energy * 0.4f, 0.0f, 1.0f);
+            h = mix(210.0f, 40.0f, curvature); // Sky blue to warm sunset gold
+            c = mix(0.18f, 0.28f, curvature);
+            l = mix(0.72f, 0.62f, curvature);
+            break;
+        }
+        case 15: { // Bioluminescence / Ocean Glow
+            float wave = sin(orbit_energy * 5.0f - time * 2.0f);
+            float pulse = 0.5f + 0.5f * sin(time * 4.0f + u * 10.0f);
+            h = mix(190.0f, 150.0f, pulse); // cyan to neon green
+            c = 0.15f + 0.1f * wave;
+            l = 0.60f + 0.35f * pow(pulse, 3.0f); // bright glowing core
+            break;
+        }
+        case 16: { // Quantum-inspired scalar color, not a simulation field.
+            float phase = 10.0f * u + 20.0f * magnitude;
+            float interference = sin(phase) * cos(phase * 1.618f);
+            h = mix(210.0f, 330.0f, u) + hueRotation * 360.0f;
+            c = 0.22f;
+            l = 0.25f + 0.65f * (0.5f + 0.5f * interference);
+            break;
+        }
+        case 17: { // Chladni-inspired scalar color, not a spatial measurement.
+            float nodal = fabs(cos(3.0f * EPI_SCULPT_PI * u) * cos(2.0f * EPI_SCULPT_PI * magnitude)
+                             - sin(2.0f * EPI_SCULPT_PI * u) * sin(3.0f * EPI_SCULPT_PI * magnitude));
+            float w = 1.0f - epi_smoothstep(0.0f, 0.25f, nodal);
+            h = mix(220.0f, 50.0f, w) + hueRotation * 360.0f;
+            c = mix(0.12f, 0.20f, w);
+            l = mix(0.25f, 0.85f, w);
+            break;
+        }
+        case 21: { // Spiraling Alive Phenomenological Agent
+            float theta = u * 6.28318f;
+            float r_log = log1p(fmax(magnitude, 0.0f));
+            float wave1 = 0.6f * sin(6.28318f * (0.18f * u + 0.013f * time));
+            float wave2 = 0.4f * sin(6.28318f * (0.31f * u + 0.008f * time + 1.7f));
+            float h_drift = time * 15.0f;
+            float h_spiral = 40.0f * (theta * theta) + 120.0f * (r_log * r_log) * orbit_energy;
+            float hue_x = 0.20f * u * 360.0f + wave1 * 40.0f + wave2 * 30.0f;
+            h = fmod(h_drift + hue_x + h_spiral + hueRotation * 360.0f, 360.0f);
+            float breath2 = 0.5f + 0.5f * sin(time * 0.12f * 6.28318f);
+            float sat_spiral = 0.22f * (0.85f + 0.25f * breath2) * (0.9f + 0.2f * sin(theta + r_log));
+            c = clamp(sat_spiral + orbit_energy * 0.06f, 0.0f, 0.38f);
+            l = 0.65f + 0.15f * sin(time * 0.05f * 6.28318f + 2.0f * r_log);
+            break;
+        }
+        case 0:
+        default: { // Standard HSV / Smooth OKLCH
+            float t = epi_smoothstep(0.0f, 1.0f, u);
+            if (t < 0.5f) {
+                float f = t * 2.0f;
+                h = mix(45.0f, 320.0f, f);
+                c = mix(0.12f, 0.18f, f);
+                l = mix(0.75f, 0.65f, f);
+            } else {
+                float f = (t - 0.5f) * 2.0f;
+                h = mix(320.0f, 220.0f, f);
+                c = mix(0.18f, 0.14f, f);
+                l = mix(0.65f, 0.70f, f);
+            }
+            h = fmod(h + orbit_energy * 45.0f + time * 12.0f + hueRotation * 360.0f, 360.0f);
+            break;
+        }
+    }
+
+    if (h < 0.0f) h += 360.0f;
+    c = clamp(c * breath + orbit_energy * 0.06f, 0.0f, 0.38f);
+    l = clamp(l + driftLuma, 0.05f, 0.98f);
+    return epi_oklch_to_rgb(l, c, h);
+}
+
+inline float3 epi_palette_morph(float u, float time, float orbit_energy, float magnitude, float extra_hue_shift) {
+    return epi_palette_evaluate(0, u, orbit_energy, magnitude, time, 0.0f, 0.0f, 0.0f);
+}
+
+inline float3 epi_airy_thin_film_reflectance(float cosTheta, float thicknessNm, float filmIOR, float substrateIOR) {
+    float ct = clamp(cosTheta, 0.0f, 1.0f);
+    float sin2ThetaI = 1.0f - ct * ct;
+    float nf = fmax(filmIOR, 1.0f);
+    float ns = fmax(substrateIOR, 1.0f);
+
+    float sin2ThetaF = sin2ThetaI / (nf * nf);
+    if (sin2ThetaF >= 1.0f) return (float3)(1.0f, 1.0f, 1.0f);
+    float cosThetaF = sqrt(fmax(0.0f, 1.0f - sin2ThetaF));
+
+    float sin2ThetaS = sin2ThetaI / (ns * ns);
+    float cosThetaS = sqrt(fmax(0.0f, 1.0f - sin2ThetaS));
+
+    float r01 = (1.0f * ct - nf * cosThetaF) / fmax(1.0f * ct + nf * cosThetaF, 1e-6f);
+    float r12 = (nf * cosThetaF - ns * cosThetaS) / fmax(nf * cosThetaF + ns * cosThetaS, 1e-6f);
+
+    float r01_sq = r01 * r01;
+    float r12_sq = r12 * r12;
+    float r01_r12 = r01 * r12;
+
+    float opd = 2.0f * nf * fmax(thicknessNm, 10.0f) * cosThetaF;
+
+    float deltaR = (2.0f * EPI_SCULPT_PI / 650.0f) * opd;
+    float deltaG = (2.0f * EPI_SCULPT_PI / 532.0f) * opd;
+    float deltaB = (2.0f * EPI_SCULPT_PI / 450.0f) * opd;
+
+    float reflR = clamp((r01_sq + r12_sq + 2.0f * r01_r12 * cos(deltaR)) / fmax(1.0f + r01_sq * r12_sq + 2.0f * r01_r12 * cos(deltaR), 1e-6f), 0.0f, 1.0f);
+    float reflG = clamp((r01_sq + r12_sq + 2.0f * r01_r12 * cos(deltaG)) / fmax(1.0f + r01_sq * r12_sq + 2.0f * r01_r12 * cos(deltaG), 1e-6f), 0.0f, 1.0f);
+    float reflB = clamp((r01_sq + r12_sq + 2.0f * r01_r12 * cos(deltaB)) / fmax(1.0f + r01_sq * r12_sq + 2.0f * r01_r12 * cos(deltaB), 1e-6f), 0.0f, 1.0f);
+
+    return (float3)(reflR, reflG, reflB);
+}
+
+inline float3 epi_cauchy_dispersion_refract(float3 incident, float3 normal, float baseIOR, float dispersionB) {
+    float3 I = normalize(incident);
+    float3 N = normalize(normal);
+    float cosI = -dot(I, N);
+    if (cosI < 0.0f) {
+        cosI = -cosI;
+        N = -N;
+    }
+
+    float nR = baseIOR + (dispersionB / (0.650f * 0.650f));
+    float nG = baseIOR + (dispersionB / (0.532f * 0.532f));
+    float nB = baseIOR + (dispersionB / (0.450f * 0.450f));
+
+    float etaR = 1.0f / fmax(nR, 1.0f);
+    float etaG = 1.0f / fmax(nG, 1.0f);
+    float etaB = 1.0f / fmax(nB, 1.0f);
+
+    float kR = 1.0f - etaR * etaR * (1.0f - cosI * cosI);
+    float kG = 1.0f - etaG * etaG * (1.0f - cosI * cosI);
+    float kB = 1.0f - etaB * etaB * (1.0f - cosI * cosI);
+
+    if (kR < 0.0f || kG < 0.0f || kB < 0.0f) {
+        return I + 2.0f * cosI * N;
+    }
+
+    float3 tR = etaR * I + (etaR * cosI - sqrt(kR)) * N;
+    float3 tG = etaG * I + (etaG * cosI - sqrt(kG)) * N;
+    float3 tB = etaB * I + (etaB * cosI - sqrt(kB)) * N;
+
+    return (float3)(tR.x, tG.y, tB.z);
+}
+
+#endif

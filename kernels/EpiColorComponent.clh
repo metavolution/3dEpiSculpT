@@ -1,0 +1,29 @@
+#ifndef EPI_COLOR_COMPONENT_CLH
+#define EPI_COLOR_COMPONENT_CLH
+#include "EpiColor.clh"
+#include "EpiColorFinite.clh"
+
+#if defined(EPI_COLOR_EFFECT_CODE) && defined(EPI_COLOR_EFFECT_OVERRIDE_ID)
+// Explicit compact palette post-effect: rgb is the current bounded linear RGB.
+inline float3 epi_color_component(float3 rgb, float materialCoord,
+                                  float orbit_energy, float magnitude, float time) {
+    EPI_COLOR_EFFECT_CODE
+}
+#endif
+
+inline float3 epi_compact_palette_evaluate(uint colorEffect, float materialCoord,
+        float orbit_energy, float magnitude, float time, float chromaBreath,
+        float lumaDrift, float hueRotation) {
+    float3 rgb = epi_palette_evaluate(colorEffect, materialCoord, orbit_energy,
+                                     magnitude, time, chromaBreath, lumaDrift, hueRotation);
+#if defined(EPI_COLOR_EFFECT_CODE) && defined(EPI_COLOR_EFFECT_OVERRIDE_ID)
+    if (colorEffect == EPI_COLOR_EFFECT_OVERRIDE_ID) {
+        float3 changed = epi_color_component(rgb, materialCoord, orbit_energy, magnitude, time);
+        // Invalid authored channels retain their original value; finite channels
+        // remain within the established SDR palette range.
+        rgb = select(rgb, clamp(changed, 0.0f, 1.0f), epi_color_finite_mask(changed));
+    }
+#endif
+    return rgb;
+}
+#endif

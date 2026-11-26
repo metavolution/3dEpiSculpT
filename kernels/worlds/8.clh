@@ -1,0 +1,129 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_LICHTENBERG_FOREST (Generator ID: 8)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_lichtenberg_forest(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // Dielectric breakdown fractal tree grove:
+    // 16 shared fractal trees with 128 branch segments each = 2048 instanced segments.
+    const uint activeCount = epi_world_active_count(recipe, 2048u);
+    const uint sourceIndex = min((index * 2048u) / activeCount, 2047u);
+    const uint tree = sourceIndex / 128u;
+    const uint localIndex = sourceIndex % 128u;
+
+    // Segment binary hierarchy over 7 levels (1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 + 1 apical)
+    uint level = 0u;
+    uint first = 0u;
+    uint width = 1u;
+    while (level < 6u && localIndex >= first + width) {
+        first += width;
+        width <<= 1u;
+        ++level;
+    }
+    const uint branchInLevel = localIndex - first;
+    const float child = (convert_float(branchInLevel) + 0.5f) / convert_float(width);
+    const float levelF = convert_float(level);
+
+    // Tree placement in organic circle
+    const float treeAngle = 6.28318530718f * convert_float(tree) / 16.0f;
+    const float treeDist = (3.6f + 0.9f * sin(treeAngle * 3.0f + params->dynamics_seed.x)) * params->output_scale.x;
+    const float3 treeRoot = (float3)(treeDist * cos(treeAngle), -1.15f * params->output_scale.y, treeDist * sin(treeAngle));
+
+    // Branch deterministic pseudo-random jaggedness
+    const float rawHashA = sin(convert_float(tree * 311u + localIndex * 73u + 17u) * 12.9898f) * 43758.5453f;
+    const float hashA = rawHashA - floor(rawHashA);
+    const float rawHashB = sin(convert_float(tree * 197u + localIndex * 131u + 53u) * 78.233f) * 43758.5453f;
+    const float hashB = rawHashB - floor(rawHashB);
+
+    // Fractal angle spread
+    const float spread = 0.26f + 0.13f * levelF;
+    const float branchAzimuth = treeAngle + (child - 0.5f) * spread * 6.2831853f + (hashA - 0.5f) * 0.92f;
+    const float branchElevation = 1.12f - 0.14f * levelF + (hashB - 0.5f) * 0.32f;
+    const float3 direction = normalize((float3)(
+        sin(branchElevation) * cos(branchAzimuth),
+        cos(branchElevation),
+        sin(branchElevation) * sin(branchAzimuth)));
+
+    // Physical position along dielectric discharge tree
+    const float height = (levelF * 0.58f + 0.12f * sin(child * 6.2831853f + hashA)) * params->output_scale.y;
+    const float reach = (pow(levelF, 1.25f) * 0.30f + 0.10f * hashB) * params->output_scale.x;
+    const float segLength = 0.82f * pow(0.75f, levelF) * params->output_scale.y;
+    const float3 position = treeRoot + (float3)(reach * cos(branchAzimuth), height, reach * sin(branchAzimuth))
+        + direction * (segLength * 0.5f);
+
+    // High-voltage dielectric breakdown pulse & electrical waves
+    const float tempo = 2.4f + 1.8f * fabs(params->dynamics_seed.x);
+    const float treeDelay = convert_float(tree) * 0.85f;
+    const float strikeTime = frame->time * tempo + treeDelay;
+    const float pulseWave = strikeTime - levelF * 0.72f;
+    const float strikeCycle = pulseWave - floor(pulseWave);
+    const float flash = exp(-strikeCycle * 6.0f); // instantaneous plasma spark decay
+    const float jitter = 0.15f * sin(frame->time * 36.0f + hashA * 100.0f); // 50/60 Hz arc flicker
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: primary thick conductive trunk arcs (level <= 1).
+    // Role 1 = Structure: secondary branched leader streamers (2 <= level <= 4).
+    // Role 2 = Accent: terminal breakdown leader tips & ionization spark discharges (level >= 5 or flash > 0.72).
+    uint semanticRole = 1u;
+    if (level <= 1u) {
+        semanticRole = 0u;
+    } else if (level >= 5u || flash > 0.72f) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Color and emission:
+    float3 tint = epi_world_phase_colour(0.55f + 0.08f * levelF + params->pulse_material.w * frame->time, 0.90f);
+    if (semanticRole == 0u) {
+        // Core trunk: charred conductive obsidian with deep electric violet current
+        tint = mix(tint, (float3)(0.12f, 0.14f, 0.20f), 0.75f);
+    } else if (semanticRole == 1u) {
+        // Streamer branches: electric azure / cyan plasma
+        tint = mix(tint, (float3)(0.18f, 0.75f, 0.98f), 0.65f);
+    } else {
+        // High-voltage spark tips: incandescent white-gold plasma arc
+        tint = mix(tint, (float3)(1.0f, 0.98f, 0.85f), 0.85f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (1.50f + 3.20f * (flash + fabs(jitter)))
+        : ((semanticRole == 1u) ? (0.35f + 1.20f * flash) : (0.10f + 0.40f * flash));
+
+    const float thickness = fmax(params->output_scale.y * (0.085f * pow(0.68f, levelF)), 0.012f);
+    instances[index].positionScale = (float4)(position, thickness);
+    // Anisotropic scaling: stretch branch segment along Y (length / thickness)
+    instances[index].axisScale = (float4)(1.0f, (segLength / thickness) * 1.05f, 1.0f, 1.0f);
+    instances[index].orientation = epi_world_align_y(direction);
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides:
+    if (semanticRole == 0u) {
+        instances[index].pbrOverride = (float4)(0.85f, 0.20f, 0.0f, 0.0f); // Metallic obsidian conductor
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.45f, 0.22f, 0.0f, 0.0f); // Translucent plasma streamer
+    } else {
+        instances[index].pbrOverride = (float4)(0.95f, 0.08f, 0.0f, 0.0f); // High-specular incandescent spark
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_lichtenberg_forest(index, params, frame, recipe, output->instances);
+}
+#endif

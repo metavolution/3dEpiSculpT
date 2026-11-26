@@ -1,0 +1,75 @@
+// Domain reduction shared by the topology consumers. No host/GPU ABI changes.
+#ifndef EPI_REDUCTION_CLH
+#define EPI_REDUCTION_CLH
+#include "EpiMath.clh"
+#include "EpiLearnMode.clh"
+
+inline float4 epi_reduce_domain4(float4 value, uint reduction_id, uint stage_mask) {
+    if (!epi_stage_enabled(stage_mask, EPI_STAGE_REDUCE)) return value;
+    value = (float4)(epi_sanitize_component(value.x), epi_sanitize_component(value.y), epi_sanitize_component(value.z), epi_sanitize_component(value.w));
+    if(reduction_id == 1) return (float4)(epi_positive_fmod(value.x+1.0f,2.0f)-1.0f, epi_positive_fmod(value.y+1.0f,2.0f)-1.0f, epi_positive_fmod(value.z+1.0f,2.0f)-1.0f, epi_positive_fmod(value.w+1.0f,2.0f)-1.0f);
+    if(reduction_id == 2) return clamp(value, -1.0f, 1.0f);
+    if(reduction_id == 4) {
+        value = fabs(value);
+        if (value.y > value.x) { float t = value.x; value.x = value.y; value.y = t; }
+        if (value.z > value.y) { float t = value.y; value.y = value.z; value.z = t; }
+        if (value.w > value.z) { float t = value.z; value.z = value.w; value.w = t; }
+        if (value.y > value.x) { float t = value.x; value.x = value.y; value.y = t; }
+        if (value.z > value.y) { float t = value.y; value.y = value.z; value.z = t; }
+        if (value.y > value.x) { float t = value.x; value.x = value.y; value.y = t; }
+        float4 f = (float4)(epi_positive_fmod(value.x+1.0f, 2.0f), epi_positive_fmod(value.y+1.0f, 2.0f), epi_positive_fmod(value.z+1.0f, 2.0f), epi_positive_fmod(value.w+1.0f, 2.0f));
+        return 1.0f - fabs(f - 1.0f);
+    }
+    if(reduction_id == 5) {
+        float r2 = dot(value, value);
+        float r = sqrt(fmax(r2, 1e-6f));
+        return (r >= 1.0f) ? (value * (tanh(r) / (r * r))) : value;
+    }
+    if(reduction_id == 6) {
+        float2 a = (float2)(cos(EPI_SCULPT_PI * value.x), sin(EPI_SCULPT_PI * value.x));
+        float2 b = (float2)(cos(EPI_SCULPT_PI * value.y), sin(EPI_SCULPT_PI * value.y));
+        float den = fmax(1.0f - 0.5f * b.y, 0.25f);
+        return (float4)(a.x / den, a.y / den, b.x / den, (value.z + value.w) * 0.5f);
+    }
+    float4 f = (float4)(epi_positive_fmod(value.x+1.0f,4.0f), epi_positive_fmod(value.y+1.0f,4.0f), epi_positive_fmod(value.z+1.0f,4.0f), epi_positive_fmod(value.w+1.0f,4.0f));
+    return 1.0f - fabs(f - 2.0f);
+}
+
+#if defined(EPI_REDUCTION_CODE) && defined(EPI_REDUCTION_OVERRIDE_ID)
+// File components own only the 3D reduction formula. The stage gate and
+// finite input policy stay outside the replaceable body.
+inline float3 epi_reduce_component(float3 p) { EPI_REDUCTION_CODE }
+#endif
+
+inline float3 epi_reduce_domain(float3 value, uint reduction_id, uint stage_mask) {
+    if (!epi_stage_enabled(stage_mask, EPI_STAGE_REDUCE)) return value;
+    value = (float3)(epi_sanitize_component(value.x), epi_sanitize_component(value.y), epi_sanitize_component(value.z));
+#if defined(EPI_REDUCTION_CODE) && defined(EPI_REDUCTION_OVERRIDE_ID)
+    if (reduction_id == EPI_REDUCTION_OVERRIDE_ID) return epi_reduce_component(value);
+#endif
+    if(reduction_id == 1) return (float3)(epi_positive_fmod(value.x+1.0f,2.0f)-1.0f, epi_positive_fmod(value.y+1.0f,2.0f)-1.0f, epi_positive_fmod(value.z+1.0f,2.0f)-1.0f);
+    if(reduction_id == 2) return clamp(value, -1.0f, 1.0f);
+    if(reduction_id == 4) {
+        value = fabs(value);
+        if (value.y > value.x) { float t = value.x; value.x = value.y; value.y = t; }
+        if (value.z > value.y) { float t = value.y; value.y = value.z; value.z = t; }
+        if (value.y > value.x) { float t = value.x; value.x = value.y; value.y = t; }
+        float3 f = (float3)(epi_positive_fmod(value.x+1.0f, 2.0f), epi_positive_fmod(value.y+1.0f, 2.0f), epi_positive_fmod(value.z+1.0f, 2.0f));
+        return 1.0f - fabs(f - 1.0f);
+    }
+    if(reduction_id == 5) {
+        float r2 = dot(value, value);
+        float r = sqrt(fmax(r2, 1e-6f));
+        return (r >= 1.0f) ? (value * (tanh(r) / (r * r))) : value;
+    }
+    if(reduction_id == 6) {
+        float2 a = (float2)(cos(EPI_SCULPT_PI * value.x), sin(EPI_SCULPT_PI * value.x));
+        float2 b = (float2)(cos(EPI_SCULPT_PI * value.y), sin(EPI_SCULPT_PI * value.y));
+        float den = fmax(1.0f - 0.5f * b.y, 0.25f);
+        return (float3)(a.x / den, a.y / den, b.x / den);
+    }
+    float3 f = (float3)(epi_positive_fmod(value.x+1.0f,4.0f), epi_positive_fmod(value.y+1.0f,4.0f), epi_positive_fmod(value.z+1.0f,4.0f));
+    return 1.0f - fabs(f - 2.0f);
+}
+
+#endif // EPI_REDUCTION_CLH

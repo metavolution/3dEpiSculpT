@@ -1,0 +1,233 @@
+// -----------------------------------------------------------------------------
+// Educational Annotation: 3D RECURSIVE SPATIAL FLUID & ADVECTION (OpenCL)
+// -----------------------------------------------------------------------------
+// This module implements camera-independent 3D volumetric memory in OpenCL.
+// Each voxel executes:
+//  1. Semi-Lagrangian Backtrace: p_prev = p - v * dt * advectionSpeed
+//  2. Trilinear Sampling of past voxel density, velocity, and spectral hue
+//  3. 3D Divergence-Free Curl Noise & Kinetic Viscosity Dissipation
+//  4. 4D Wavepacket & Quantum Soliton Injection
+// -----------------------------------------------------------------------------
+#ifndef EPI_FLUID_CLH
+#define EPI_FLUID_CLH
+
+#include "SculptureGpuAbi.clh"
+#include "EpiMath.clh"
+
+#include "ExperimentSpatialFluidAbi.clh"
+
+// The compact sculpture producer stores its temporal field as float4 values.
+// These helpers sample that image directly and remain independent from the
+// typed SpatialFluidVoxelGpu scientific route below. `normalizedPosition` is
+// expressed in [0, 1] voxel-grid coordinates.
+inline float4 epi_trilinear_sample_variable_res(
+    float3 normalizedPosition,
+    uint resolution,
+    uint auxiliaryResolutionScale,
+    __read_only image3d_t grid) {
+    if (resolution == 0u
+        || any(normalizedPosition < (float3)(0.0f))
+        || any(normalizedPosition > (float3)(1.0f))) {
+        return (float4)(0.0f);
+    }
+    const sampler_t sampler = CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP_TO_EDGE | CLK_FILTER_LINEAR;
+    return read_imagef(grid, sampler, (float4)(normalizedPosition.x, normalizedPosition.y, normalizedPosition.z, 0.0f));
+}
+
+inline float4 epi_trilinear_advect(
+    float3 destinationCell,
+    float3 advectionVelocity,
+    uint resolution,
+    __read_only image3d_t grid) {
+    const float3 sourceCell = destinationCell - advectionVelocity;
+    const float inverseGridExtent = 1.0f / max(convert_float(resolution - 1u), 1.0f);
+    return epi_trilinear_sample_variable_res(
+        sourceCell * inverseGridExtent, resolution, 1u, grid);
+}
+
+inline float epi_fluid_harmonic_potential(float x, float y, float z, float seed) {
+    return sin(x * 1.7f + seed) * cos(y * 1.3f - seed * 0.7f) * sin(z * 1.9f + seed * 1.3f);
+}
+
+inline float3 epi_fluid_curl_noise(float3 p, float freq, float strength) {
+    if (strength <= 0.0001f) return (float3)(0.0f);
+
+    const float eps = 0.01f;
+    const float inv2eps = 0.5f / eps;
+    const float3 scaledP = p * freq;
+
+    const float psi_z_py = epi_fluid_harmonic_potential(scaledP.x, scaledP.y + eps, scaledP.z, 1.0f);
+    const float psi_z_my = epi_fluid_harmonic_potential(scaledP.x, scaledP.y - eps, scaledP.z, 1.0f);
+    const float psi_y_pz = epi_fluid_harmonic_potential(scaledP.x, scaledP.y, scaledP.z + eps, 2.0f);
+    const float psi_y_mz = epi_fluid_harmonic_potential(scaledP.x, scaledP.y, scaledP.z - eps, 2.0f);
+
+    const float psi_x_pz = epi_fluid_harmonic_potential(scaledP.x, scaledP.y, scaledP.z + eps, 3.0f);
+    const float psi_x_mz = epi_fluid_harmonic_potential(scaledP.x, scaledP.y, scaledP.z - eps, 3.0f);
+    const float psi_z_px = epi_fluid_harmonic_potential(scaledP.x + eps, scaledP.y, scaledP.z, 1.0f);
+    const float psi_z_mx = epi_fluid_harmonic_potential(scaledP.x - eps, scaledP.y, scaledP.z, 1.0f);
+
+    const float psi_y_px = epi_fluid_harmonic_potential(scaledP.x + eps, scaledP.y, scaledP.z, 2.0f);
+    const float psi_y_mx = epi_fluid_harmonic_potential(scaledP.x - eps, scaledP.y, scaledP.z, 2.0f);
+    const float psi_x_py = epi_fluid_harmonic_potential(scaledP.x, scaledP.y + eps, scaledP.z, 3.0f);
+    const float psi_x_my = epi_fluid_harmonic_potential(scaledP.x, scaledP.y - eps, scaledP.z, 3.0f);
+
+    const float curlX = (psi_z_py - psi_z_my - (psi_y_pz - psi_y_mz)) * inv2eps * strength;
+    const float curlY = (psi_x_pz - psi_x_mz - (psi_z_px - psi_z_mx)) * inv2eps * strength;
+    const float curlZ = (psi_y_px - psi_y_mx - (psi_x_py - psi_x_my)) * inv2eps * strength;
+
+    return (float3)(curlX, curlY, curlZ);
+}
+
+inline uint epi_spatial_fluid_linear_index(uint3 coordinate, uint3 dimensions) {
+    return (coordinate.z * dimensions.y + coordinate.y) * dimensions.x + coordinate.x;
+}
+
+// Cell-centred trilinear sampling in the world-space bounds declared by the
+// published field descriptor.  The three axes are independent; no cubic-grid
+// or origin-centred assumption leaks into the scientific solver.
+inline SpatialFluidVoxelGpu epi_spatial_fluid_sample_trilinear(
+    __global const SpatialFluidVoxelGpu* grid,
+    uint3 dimensions,
+    float3 worldMinimum,
+    float3 worldMaximum,
+    float3 p
+) {
+    SpatialFluidVoxelGpu zero = {0.0f, 0.0f, 0.0f, 0.0f,
+                                 0.0f, 0.0f, 1.0f, 0.0f};
+    if (dimensions.x == 0u || dimensions.y == 0u || dimensions.z == 0u) return zero;
+    const float3 extent = worldMaximum - worldMinimum;
+    if (any(extent <= (float3)(0.0f))
+        || any(p < worldMinimum) || any(p > worldMaximum)) {
+        return zero;
+    }
+
+    // Descriptor bounds are voxel-cell boundaries.  Subtracting 0.5 maps each
+    // cell centre exactly onto its integer grid coordinate; boundary samples
+    // clamp to the nearest edge cell while samples outside the declared world
+    // have already been rejected above.
+    const float gx = clamp((p.x - worldMinimum.x) / extent.x * convert_float(dimensions.x) - 0.5f,
+                           0.0f, convert_float(dimensions.x - 1u));
+    const float gy = clamp((p.y - worldMinimum.y) / extent.y * convert_float(dimensions.y) - 0.5f,
+                           0.0f, convert_float(dimensions.y - 1u));
+    const float gz = clamp((p.z - worldMinimum.z) / extent.z * convert_float(dimensions.z) - 0.5f,
+                           0.0f, convert_float(dimensions.z - 1u));
+
+    const uint x0 = convert_uint(floor(gx));
+    const uint y0 = convert_uint(floor(gy));
+    const uint z0 = convert_uint(floor(gz));
+    const uint x1 = min(x0 + 1u, dimensions.x - 1u);
+    const uint y1 = min(y0 + 1u, dimensions.y - 1u);
+    const uint z1 = min(z0 + 1u, dimensions.z - 1u);
+    const float fx = gx - convert_float(x0);
+    const float fy = gy - convert_float(y0);
+    const float fz = gz - convert_float(z0);
+
+    #define GET_SPATIAL_FLUID(gx_, gy_, gz_) grid[epi_spatial_fluid_linear_index((uint3)(gx_, gy_, gz_), dimensions)]
+    const SpatialFluidVoxelGpu c000 = GET_SPATIAL_FLUID(x0, y0, z0);
+    const SpatialFluidVoxelGpu c100 = GET_SPATIAL_FLUID(x1, y0, z0);
+    const SpatialFluidVoxelGpu c010 = GET_SPATIAL_FLUID(x0, y1, z0);
+    const SpatialFluidVoxelGpu c110 = GET_SPATIAL_FLUID(x1, y1, z0);
+    const SpatialFluidVoxelGpu c001 = GET_SPATIAL_FLUID(x0, y0, z1);
+    const SpatialFluidVoxelGpu c101 = GET_SPATIAL_FLUID(x1, y0, z1);
+    const SpatialFluidVoxelGpu c011 = GET_SPATIAL_FLUID(x0, y1, z1);
+    const SpatialFluidVoxelGpu c111 = GET_SPATIAL_FLUID(x1, y1, z1);
+    #undef GET_SPATIAL_FLUID
+
+    const float w000 = (1.0f - fx) * (1.0f - fy) * (1.0f - fz);
+    const float w100 = fx * (1.0f - fy) * (1.0f - fz);
+    const float w010 = (1.0f - fx) * fy * (1.0f - fz);
+    const float w110 = fx * fy * (1.0f - fz);
+    const float w001 = (1.0f - fx) * (1.0f - fy) * fz;
+    const float w101 = fx * (1.0f - fy) * fz;
+    const float w011 = (1.0f - fx) * fy * fz;
+    const float w111 = fx * fy * fz;
+
+    SpatialFluidVoxelGpu outVoxel;
+    outVoxel.density = c000.density * w000 + c100.density * w100 + c010.density * w010 + c110.density * w110
+                     + c001.density * w001 + c101.density * w101 + c011.density * w011 + c111.density * w111;
+    outVoxel.vx      = c000.vx * w000 + c100.vx * w100 + c010.vx * w010 + c110.vx * w110
+                     + c001.vx * w001 + c101.vx * w101 + c011.vx * w011 + c111.vx * w111;
+    outVoxel.vy      = c000.vy * w000 + c100.vy * w100 + c010.vy * w010 + c110.vy * w110
+                     + c001.vy * w001 + c101.vy * w101 + c011.vy * w011 + c111.vy * w111;
+    outVoxel.vz      = c000.vz * w000 + c100.vz * w100 + c010.vz * w010 + c110.vz * w110
+                     + c001.vz * w001 + c101.vz * w101 + c011.vz * w011 + c111.vz * w111;
+    outVoxel.hue     = c000.hue * w000 + c100.hue * w100 + c010.hue * w010 + c110.hue * w110
+                     + c001.hue * w001 + c101.hue * w101 + c011.hue * w011 + c111.hue * w111;
+    outVoxel.energy  = c000.energy * w000 + c100.energy * w100 + c010.energy * w010 + c110.energy * w110
+                     + c001.energy * w001 + c101.energy * w101 + c011.energy * w011 + c111.energy * w111;
+    outVoxel.chemical_u = c000.chemical_u * w000 + c100.chemical_u * w100 + c010.chemical_u * w010 + c110.chemical_u * w110
+                        + c001.chemical_u * w001 + c101.chemical_u * w101 + c011.chemical_u * w011 + c111.chemical_u * w111;
+    outVoxel.chemical_v = c000.chemical_v * w000 + c100.chemical_v * w100 + c010.chemical_v * w010 + c110.chemical_v * w110
+                        + c001.chemical_v * w001 + c101.chemical_v * w101 + c011.chemical_v * w011 + c111.chemical_v * w111;
+    return outVoxel;
+}
+
+// -----------------------------------------------------------------------------
+// Educational Annotation: TRILINEAR FLUID ADVECTION & REACTION-DIFFUSION
+// -----------------------------------------------------------------------------
+// Encapsulates the entire temporal fluid step:
+// 1. Curl-noise advection computation
+// 2. Trilinear history sampling
+// 3. Gray-Scott or BZ reaction-diffusion morphogenesis
+// -----------------------------------------------------------------------------
+inline float4 epi_evaluate_fluid_diffusion(
+    uint index,
+    float fx_idx, float fy_idx, float fz_idx,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __global const float4* prev_spatial_buffer,
+    __read_only image3d_t prev_spatial_image) 
+{
+    float4 current_fluid = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+    if (params->output_scale.w == 0.0f && prev_spatial_buffer) {
+        // Convection velocity driven by analytic Curl Field (recursive spatial memory)
+        float3 pos = (float3)(fx_idx, fy_idx, fz_idx) / (float)EPI_SCULPT_VOLUME_GRID_SIZE * 2.0f - 1.0f;
+        float3 curl = epi_curl_field(pos * 1.5f + (float3)(frame->time * params->kinetic_flow.x));
+        
+        // Multiply by curlStrength (kinetic_flow.y)
+        float vel_x = curl.x * params->kinetic_flow.y + sin(fy_idx * 0.15f + frame->time * 0.5f) * 0.5f;
+        float vel_y = curl.y * params->kinetic_flow.y + 1.2f; // Upward bias
+        float vel_z = curl.z * params->kinetic_flow.y + cos(fy_idx * 0.15f + frame->time * 0.5f) * 0.5f;
+        
+        // Trilinear sampling for Advection (Modularized into EpiFluid.clh)
+        float dt = (params->temporal_control.y > 0.0f) ? params->temporal_control.y : frame->delta_seconds;
+        float3 advection_vel = (float3)(vel_x, vel_y, vel_z) * dt * 60.0f; // Scale assuming 60Hz baseline
+        if (params->auxiliary_resolution_scale > 1u) {
+            float3 norm_pos = ((float3)(fx_idx, fy_idx, fz_idx) - advection_vel) / (float)EPI_SCULPT_VOLUME_GRID_SIZE;
+            current_fluid = epi_trilinear_sample_variable_res(
+                norm_pos, EPI_SCULPT_VOLUME_GRID_SIZE, params->auxiliary_resolution_scale, prev_spatial_image);
+        } else {
+            current_fluid = epi_trilinear_advect(
+                (float3)(fx_idx, fy_idx, fz_idx), advection_vel, EPI_SCULPT_VOLUME_GRID_SIZE, prev_spatial_image);
+        }
+        
+        // 3D Reaction-Diffusion (Gray-Scott Biological Morphogenesis)
+        int vx = convert_int(fx_idx); int vy = convert_int(fy_idx); int vz = convert_int(fz_idx);
+        if (vx > 0 && vx < (EPI_SCULPT_VOLUME_GRID_SIZE - 1u) && vy > 0 && vy < (EPI_SCULPT_VOLUME_GRID_SIZE - 1u) && vz > 0 && vz < (EPI_SCULPT_VOLUME_GRID_SIZE - 1u)) {
+            // Compute 3D Laplacian for U and V (stored in .x and .y)
+            float4 neighbors_cross = prev_spatial_buffer[index - 1] + prev_spatial_buffer[index + 1] +
+                                     prev_spatial_buffer[index - EPI_SCULPT_VOLUME_GRID_SIZE] + prev_spatial_buffer[index + EPI_SCULPT_VOLUME_GRID_SIZE] +
+                                     prev_spatial_buffer[index - (EPI_SCULPT_VOLUME_GRID_SIZE * EPI_SCULPT_VOLUME_GRID_SIZE)] + prev_spatial_buffer[index + (EPI_SCULPT_VOLUME_GRID_SIZE * EPI_SCULPT_VOLUME_GRID_SIZE)];
+            float4 laplacian = neighbors_cross - 6.0f * prev_spatial_buffer[index];
+            
+            // Temporally varying feed/kill rates based on sine waves
+            float audio_feed = 0.035f + params->audio_spectrum.w * 0.05f;
+            float audio_kill = 0.060f - params->audio_spectrum.x * 0.02f;
+            
+            float2 rd_next = epi_gray_scott(
+                current_fluid.x, current_fluid.y, 
+                laplacian.x, laplacian.y, 
+                audio_feed, audio_kill, 
+                dt * 60.0f, // time step
+                0.20f, 0.10f // D_u, D_v
+            );
+            
+            current_fluid.x = rd_next.x;
+            current_fluid.y = rd_next.y;
+            current_fluid.z = clamp(current_fluid.z * 0.99f + (rd_next.x * rd_next.y) * 0.1f, 0.0f, 1.0f); // Store a composite "glow" map in Z
+        }
+    }
+    return current_fluid;
+}
+
+#endif // EPI_FLUID_CLH

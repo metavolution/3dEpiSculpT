@@ -1,0 +1,95 @@
+#pragma once
+#ifndef EPI_SCULPT_PI
+#define EPI_SCULPT_PI 3.14159265359f
+#endif
+#define epi_smoothstep smoothstep
+
+// Evaluates the full transformation path on a low-res grid and outputs to a VBO.
+inline void epi_sculpt_evaluate_grid_transform(
+    const uint index,
+    const uint gridResolution,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    __global MgfxVertex* outVertexBuffer)
+{
+    float u = (float)(index % gridResolution) / (float)(gridResolution - 1);
+    float v = (float)(index / gridResolution) / (float)(gridResolution - 1);
+    
+    float nx = u * 2.0f - 1.0f;
+    float ny = v * 2.0f - 1.0f;
+    
+    float3 seed = (float3)(nx * 4.0f, ny * 4.0f, 0.0f);
+    
+    float orbit_energy;
+    float final_seed_weight;
+    float orbit_trap;
+    
+    float3 prev_feedback = seed;
+    float3 math_output = epi_evaluate_fractal_loop(
+        seed, u, params, frame, prev_feedback,
+        &orbit_energy, &final_seed_weight, &orbit_trap);
+    
+    float eps = 0.005f;
+    float dummy1, dummy2, dummy3;
+    float3 seed_dx = seed + (float3)(eps * 4.0f, 0.0f, 0.0f);
+    float3 out_dx = epi_evaluate_fractal_loop(
+        seed_dx, u, params, frame, prev_feedback,
+        &dummy1, &dummy2, &dummy3);
+        
+    float3 seed_dy = seed + (float3)(0.0f, eps * 4.0f, 0.0f);
+    float3 out_dy = epi_evaluate_fractal_loop(
+        seed_dy, u, params, frame, prev_feedback,
+        &dummy1, &dummy2, &dummy3);
+    
+    float dHdx = (length(out_dx) - length(math_output)) / eps;
+    float dHdy = (length(out_dy) - length(math_output)) / eps;
+    
+    float3 normal = normalize((float3)(-dHdx, -dHdy, 1.0f));
+    
+    // Simplistic color evaluation for Grid Foliation
+    float3 color = epi_palette_evaluate(
+        1, // basic OKLCH mode
+        orbit_trap,
+        orbit_energy,
+        length(math_output),
+        frame->time,
+        0.5f,
+        1.0f,
+        frame->time * 0.1f
+    );
+    
+    float displacement = length(math_output) * 0.1f;
+    
+    if (outVertexBuffer) {
+        outVertexBuffer[index].pos_x = nx * 5.0f;
+        outVertexBuffer[index].pos_y = displacement * 2.0f;
+        outVertexBuffer[index].pos_z = ny * 5.0f;
+        
+        outVertexBuffer[index].norm_x = normal.x;
+        outVertexBuffer[index].norm_y = normal.z;
+        outVertexBuffer[index].norm_z = -normal.y;
+        
+        outVertexBuffer[index].uv_u = u;
+        outVertexBuffer[index].uv_v = v;
+        
+        outVertexBuffer[index].color_r = color.x;
+        outVertexBuffer[index].color_g = color.y;
+        outVertexBuffer[index].color_b = color.z;
+        outVertexBuffer[index].color_a = 1.0f;
+        
+        outVertexBuffer[index].tan_x = 1.0f;
+        outVertexBuffer[index].tan_y = 0.0f;
+        outVertexBuffer[index].tan_z = 0.0f;
+        outVertexBuffer[index].tan_w = 1.0f;
+        
+        outVertexBuffer[index].joint_0 = 0;
+        outVertexBuffer[index].joint_1 = 0;
+        outVertexBuffer[index].joint_2 = 0;
+        outVertexBuffer[index].joint_3 = 0;
+        
+        outVertexBuffer[index].weight_0 = 0.0f;
+        outVertexBuffer[index].weight_1 = 0.0f;
+        outVertexBuffer[index].weight_2 = 0.0f;
+        outVertexBuffer[index].weight_3 = 0.0f;
+    }
+}

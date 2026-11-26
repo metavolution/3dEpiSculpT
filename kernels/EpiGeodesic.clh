@@ -1,0 +1,123 @@
+// -----------------------------------------------------------------------------
+// Pseudo-Schwarzschild null-geodesic integration for the implicit raymarcher.
+// -----------------------------------------------------------------------------
+// attractor_strength is geometric mass M (G = c = 1), so the event horizon is
+// r_s = 2M and the unstable photon sphere is r = 3M.  This is deliberately a
+// real-time optical approximation rather than a full four-tensor integrator:
+// only acceleration perpendicular to the photon direction is retained.  The
+// midpoint update preserves unit ray speed while still producing the familiar
+// weak-field deflection, photon-ring dwell, and horizon capture behavior.
+
+#ifndef EPI_GEODESIC_CLH
+#define EPI_GEODESIC_CLH
+
+inline float epi_schwarzschild_radius(float geometric_mass) {
+    return 2.0f * fmax(geometric_mass, 0.0f);
+}
+
+inline float epi_photon_sphere_radius(float geometric_mass) {
+    return 3.0f * fmax(geometric_mass, 0.0f);
+}
+
+inline float3 epi_null_geodesic_acceleration(
+    float3 position,
+    float3 direction,
+    float geometric_mass
+) {
+    const float horizon = epi_schwarzschild_radius(geometric_mass);
+    const float radius2 = fmax(dot(position, position), horizon * horizon * 0.64f + 1.0e-5f);
+    const float radius = sqrt(radius2);
+    const float3 radial = position / radius;
+
+    // Weak-field 1/r^2 attraction, strengthened smoothly near r_s to mimic
+    // Schwarzschild optical curvature without introducing a singular force.
+    const float compactness = horizon / fmax(radius, 1.0e-4f);
+    const float magnitude = geometric_mass / radius2
+        * (1.0f + 1.5f * clamp(compactness, 0.0f, 1.5f));
+    const float3 gravity = -radial * magnitude;
+
+    // Parallel acceleration changes parameterization, not the spatial light
+    // path. Removing it keeps |direction| = 1 after every integration step.
+    return gravity - direction * dot(gravity, direction);
+}
+
+inline float epi_geodesic_safe_step(
+    float requested_step,
+    float3 position,
+    float3 direction,
+    float geometric_mass
+) {
+    if (geometric_mass <= 1.0e-5f) return requested_step;
+
+    const float radius = length(position);
+    const float horizon = epi_schwarzschild_radius(geometric_mass);
+    const float curvature = length(epi_null_geodesic_acceleration(
+        position, direction, geometric_mass));
+
+    // Bound angular error per midpoint step and prevent a long SDF step from
+    // jumping across the horizon. The 0.006 floor guarantees finite progress.
+    const float curvature_limit = sqrt(0.025f / fmax(curvature, 1.0e-5f));
+    const float horizon_limit = fmax((radius - horizon) * 0.35f, 0.006f);
+    const float far_field_limit = 0.18f + 0.16f
+        * clamp((radius - horizon) / fmax(radius + horizon, 1.0e-4f), 0.0f, 1.0f);
+    const float bounded_step = fmin(
+        curvature_limit, fmin(horizon_limit, far_field_limit));
+    return fmin(requested_step, fmax(bounded_step, 0.006f));
+}
+
+inline float epi_integrate_null_geodesic_midpoint(
+    float3* position,
+    float3* direction,
+    float affine_step,
+    float geometric_mass
+) {
+    const float3 initial_direction = *direction;
+    const float3 a0 = epi_null_geodesic_acceleration(
+        *position, initial_direction, geometric_mass);
+    const float3 midpoint_direction = normalize(
+        initial_direction + a0 * (0.5f * affine_step));
+    const float3 midpoint_position = *position
+        + midpoint_direction * (0.5f * affine_step);
+    const float3 midpoint_acceleration = epi_null_geodesic_acceleration(
+        midpoint_position, midpoint_direction, geometric_mass);
+    const float3 next_direction = normalize(
+        initial_direction + midpoint_acceleration * affine_step);
+
+    const float3 average_direction = initial_direction + next_direction;
+    const float average_length2 = dot(average_direction, average_direction);
+    *position += (average_length2 > 1.0e-8f
+        ? average_direction * rsqrt(average_length2)
+        : next_direction) * affine_step;
+    *direction = next_direction;
+    return length(next_direction - initial_direction);
+}
+
+inline float epi_geodesic_star_hash(float3 cell) {
+    const float hashed = sin(dot(
+        cell, (float3)(127.1f, 311.7f, 74.7f))) * 43758.5453f;
+    return hashed - floor(hashed);
+}
+
+inline float3 epi_lensed_deep_space(float3 direction, float time) {
+    const float3 rd = normalize(direction);
+    const float3 star_cell = floor(rd * 720.0f);
+    const float star_seed = epi_geodesic_star_hash(star_cell);
+    const float stars = pow(star_seed, 42.0f)
+        * (0.65f + 0.35f * sin(time * 0.7f + star_seed * 31.0f));
+
+    // A tilted emissive galactic ribbon gives bent rays structured background
+    // light to magnify into arcs instead of merely warping a flat clear color.
+    const float galactic_axis = rd.y * 0.82f + rd.x * 0.31f - rd.z * 0.22f;
+    const float dust = 0.55f + 0.45f * sin(
+        rd.x * 37.0f + rd.z * 29.0f + time * 0.025f);
+    const float galaxy = exp(-18.0f * fabs(galactic_axis)) * dust;
+    const float3 cold_space = (float3)(0.004f, 0.007f, 0.018f);
+    const float3 galaxy_color = (float3)(0.12f, 0.22f, 0.48f) * galaxy
+        + (float3)(0.65f, 0.22f, 0.08f) * galaxy * galaxy * 0.38f;
+    const float3 star_color = mix(
+        (float3)(0.42f, 0.70f, 1.0f),
+        (float3)(1.0f, 0.68f, 0.32f), star_seed) * stars * 2.8f;
+    return cold_space + galaxy_color + star_color;
+}
+
+#endif // EPI_GEODESIC_CLH

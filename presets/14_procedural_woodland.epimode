@@ -1,0 +1,35 @@
+{
+    "meta": {
+        "id": "authored/procedural_woodland_world",
+        "title": "Procedural Woodland",
+        "author": "Antigravity",
+        "description": "Lush green canopy, deep brown trunks, bright floral spots. Procedural layout."
+    },
+    "world": {
+        "generatorId": 11,
+        "primitiveId": 0,
+        "instanceBudget": 4000,
+        "generatorHz": 30,
+        "materialBandCount": 3,
+        "uses4DProjection": false
+    },
+    "post": {
+        "bloom": {
+            "intensity": 0.1,
+            "threshold": 1.0,
+            "softKnee": 0.5
+        },
+        "colorGrading": {
+            "exposure": 1.0,
+            "contrast": 1.1,
+            "saturation": 1.2
+        },
+        "fog": {
+            "enabled": true,
+            "density": 0.05,
+            "heightFalloff": 0.2,
+            "scattering": [0.6, 0.7, 0.8],
+            "absorption": [0.1, 0.1, 0.1]
+        }
+    }
+}

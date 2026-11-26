@@ -1,0 +1,42 @@
+{
+  "name": "Dimensional Soliton & Conformal Foliation Odyssey",
+  "description": "Autonomous multi-movement mathematical composition exploring 2.5D, 3.5D, and 4D projections via equal-power VJ performance deck crossfading",
+  "loop": true,
+  "cues": [
+    {
+      "preset": "authored/dimensional/100_clifford_torus_stereographic_projection",
+      "title": "Clifford Flat Torus S3 Stereographic Foliation",
+      "dwell_sec": 8.0,
+      "transition_sec": 3.0,
+      "curve": "EqualPower"
+    },
+    {
+      "preset": "authored/dimensional/121_apollonian_gasket_spherepack_3d",
+      "title": "Apollonian Gasket 3D Conformal Sphere Packing",
+      "dwell_sec": 8.0,
+      "transition_sec": 4.0,
+      "curve": "EqualPower"
+    },
+    {
+      "preset": "authored/dimensional/122_conformal_wing_aerofoil_relief_25d",
+      "title": "Joukowsky Aerodynamic Conformal Streamline Relief",
+      "dwell_sec": 8.0,
+      "transition_sec": 3.5,
+      "curve": "Smoothstep"
+    },
+    {
+      "preset": "authored/dimensional/123_quartic_spiral_pinwheel_foliation_4d",
+      "title": "Degree-4 Cassini Pinwheel SO(4) Rotor Foliation",
+      "dwell_sec": 8.0,
+      "transition_sec": 4.0,
+      "curve": "EqualPower"
+    },
+    {
+      "preset": "authored/dimensional/124_hofstadter_butterfly_quantum_lattice_35d",
+      "title": "Hofstadter Butterfly Harper Quantum Hall Spectrum",
+      "dwell_sec": 10.0,
+      "transition_sec": 4.0,
+      "curve": "EqualPower"
+    }
+  ]
+}

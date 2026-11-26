@@ -1,0 +1,72 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_CALABI_YAU_MANIFOLD (Generator ID: 17)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_calabi_yau(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const float normalizedIndex = convert_float(index) / convert_float(max(1u, recipe->instanceBudget));
+    
+    // U, V parameterization over a 2D torus mapped into 6D Calabi-Yau slice
+    const float u = normalizedIndex * 6.28318530718f * 11.0f; // wrap multiple times
+    const float v = normalizedIndex * 6.28318530718f * 7.0f;
+    
+    // Quintic polynomial manifold approximation embedding
+    // z1^5 + z2^5 + z3^5 = 0 logic simplified for visually stunning 3D projection
+    const float r = 1.0f + 0.3f * sin(5.0f * u) * cos(5.0f * v);
+    
+    const float phase = frame->time * params->dynamics_seed.x + normalizedIndex * 6.28318530718f;
+    const float x = r * cos(u) * (1.0f + 0.5f * cos(v));
+    const float y = r * sin(u) * (1.0f + 0.5f * cos(v));
+    const float z = r * 0.5f * sin(v) + 0.2f * sin(phase + 3.0f * u);
+    
+    const float w = 0.3f * cos(phase + 2.0f * v); // 4D depth
+    const float scale = params->output_scale.y * (0.8f + 0.2f * sin(phase));
+    
+    const float3 tint = epi_world_phase_colour(phase / 6.28318530718f, 1.0f);
+    
+    WorldInstanceGpu instance;
+    instance.positionScale = (float4)(x, y, z, scale);
+    
+    // Simplistic orientation based on normal
+    float3 n = normalize((float3)(cos(u + 1.57f), sin(u + 1.57f), 0.5f * cos(v)));
+    instance.orientation = epi_world_align_y(n);
+    
+    instance.tintEmission = (float4)(tint.x * 1.5f, tint.y * 1.5f, tint.z * 1.5f, 0.8f);
+    
+    instance.primitiveId = recipe->primitiveId;
+    instance.materialBand = (index % recipe->materialBandCount);
+    
+    instances[index] = instance;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_calabi_yau(index, params, frame, recipe, output->instances);
+}
+#endif

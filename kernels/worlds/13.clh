@@ -1,0 +1,108 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_NEURAL_SYNAPSE_LATTICE (Generator ID: 13)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_neural_synapse_lattice(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    const uint activeCount = epi_world_active_count(recipe, 16384u);
+    const uint i = min((index * 16384u) / activeCount, 16383u);
+    
+    // Create a 3D lattice of 16x32x32 = 16384
+    const uint xIdx = i % 16u;
+    const uint yIdx = (i / 16u) % 32u;
+    const uint zIdx = (i / 512u) % 32u;
+    
+    const float x = convert_float(xIdx) - 7.5f;
+    const float y = convert_float(yIdx) - 15.5f;
+    const float z = convert_float(zIdx) - 15.5f;
+    
+    // Audio Reactivity
+    float bass = params->audio_spectrum.x;
+    float flux = params->audio_spectrum.w;
+    float treble = params->audio_spectrum.z;
+
+    // Distort the lattice into an organic shape (a brain-like hemisphere or nervous tract)
+    float time = frame->time * params->dynamics_seed.x * 0.5f;
+    
+    // Bass intensely warps the lattice structure
+    float warp = 0.5f + bass * 2.0f;
+    float nx = sin(y * 0.4f + time) + cos(z * 0.3f);
+    float ny = cos(x * 0.4f - time * 0.8f) + sin(z * 0.5f);
+    float nz = sin(x * 0.3f + time * 1.1f) + cos(y * 0.4f);
+    
+    // The "neurons"
+    float3 pos = (float3)(x * 0.8f + nx * warp, y * 0.8f + ny * warp, z * 0.8f + nz * warp);
+    
+    // Synaptic firing pulse
+    // Waves of action potentials traveling through the lattice, strongly triggered by audio flux & treble
+    float action_potential = sin(pos.x * 0.5f + pos.y * 0.7f - pos.z * 0.3f + time * 3.0f + params->latent_w);
+    // Add external audio stimulus directly to the action potential
+    action_potential += (flux + treble) * 1.5f * sin(time * 10.0f + pos.x);
+    action_potential = pown(fmax(0.0f, action_potential), 4); // Sharp spikes
+    
+    // Latent topology blending allows the lattice to explode or condense
+    pos *= (0.8f + 0.4f * params->topologyBlend + bass * 0.2f);
+    
+    // Orientation: point along the gradient of the noise
+    float3 grad = normalize((float3)(
+        cos(y * 0.4f + time),
+        -sin(x * 0.4f - time * 0.8f),
+        cos(x * 0.3f + time * 1.1f)
+    ) + (float3)(0.001f));
+    
+    float pulseScale = 0.05f + 0.15f * action_potential + bass * 0.1f;
+    float scale = params->output_scale.y * pulseScale;
+    
+    // Color depends on action potential and position
+    float3 tint = epi_world_phase_colour(
+        convert_float(zIdx) * 0.05f + time * 0.2f + action_potential * 0.1f + treble * 0.5f, 
+        0.8f + 0.2f * action_potential
+    );
+    
+    instances[index].positionScale = (float4)(pos, fmax(scale, 0.01f));
+    instances[index].orientation = epi_world_align_y(grad);
+    
+    // High emission during action potential, flashes violently on transients
+    float emission = 0.1f + 2.5f * action_potential + flux * 10.0f;
+    instances[index].tintEmission = (float4)(tint, emission);
+    
+    // Mix spheres (soma) and cylinders (axons) based on grid
+    uint isAxon = ((xIdx + yIdx + zIdx) % 3) == 0 ? 1u : 0u;
+    instances[index].primitiveId = isAxon ? 2u : 0u; // 2 = Cylinder, 0 = Sphere
+    instances[index].materialBand = (xIdx + zIdx) % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = i;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_neural_synapse_lattice(index, params, frame, recipe, output->instances);
+}
+#endif

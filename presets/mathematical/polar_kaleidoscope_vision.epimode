@@ -1,0 +1,14 @@
+{
+    "version": 3,
+    "preset": "Polar Kaleidoscope Vision",
+    "presentation": "world",
+    "inner": "octonion_cayley",
+    "reduction": "pareidolia_cathedral",
+    "seedType": "cross_polytope_4d",
+    "colorEffect": "thinfilm",
+    "enable4D": 1,
+    "worldScale": 1.25,
+    "rotorAlpha": 0.5,
+    "rotorTheta4D": 1.57,
+    "patternSpeed": 0.03
+}

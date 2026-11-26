@@ -1,0 +1,35 @@
+{
+    "meta": {
+        "id": "authored/neural_synapse_lattice",
+        "title": "Neural Synapse Lattice",
+        "author": "Antigravity",
+        "description": "Dark flesh tones, bright axon flashes, warm synaptic sparks."
+    },
+    "world": {
+        "generatorId": 13,
+        "primitiveId": 6,
+        "instanceBudget": 16384,
+        "generatorHz": 60,
+        "materialBandCount": 3,
+        "uses4DProjection": false
+    },
+    "post": {
+        "bloom": {
+            "intensity": 0.3,
+            "threshold": 0.8,
+            "softKnee": 0.6
+        },
+        "colorGrading": {
+            "exposure": 0.9,
+            "contrast": 1.2,
+            "saturation": 1.1
+        },
+        "fog": {
+            "enabled": true,
+            "density": 0.1,
+            "heightFalloff": 0.3,
+            "scattering": [0.8, 0.2, 0.2],
+            "absorption": [0.2, 0.05, 0.05]
+        }
+    }
+}

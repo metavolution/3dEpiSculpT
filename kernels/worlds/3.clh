@@ -1,0 +1,78 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_GOLDEN_PHYLLOTAXIS (Generator ID: 3)
+// -----------------------------------------------------------------------------
+
+#define EPI_PHYLLOTAXIS_ROLE_FORM 0u      // Central vaulted nave & inner spire
+#define EPI_PHYLLOTAXIS_ROLE_STRUCTURE 1u // Radiating spiral colonnade & buttresses
+#define EPI_PHYLLOTAXIS_ROLE_ACCENT 2u    // Fibonacci harmonic crests & luminous lanterns
+
+inline uint epi_phyllotaxis_material_role(const uint semanticRole,
+                                          const __constant WorldRecipeGpu* recipe) {
+    return min(semanticRole, recipe->materialBandCount - 1u);
+}
+
+inline void epi_world_write_golden_phyllotaxis(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    // Budget changes resample the complete golden spiral, rather than merely
+    // retaining its centre. This makes quality reduction composition-safe.
+    const float normalizedIndex = (convert_float(index) + 0.5f)
+        / convert_float(activeCount);
+    const float angle = normalizedIndex * 1024.0f * EPI_WORLD_GOLDEN_ANGLE
+        + frame->time * params->dynamics_seed.x * 0.35f;
+    const float radius = 7.0f * sqrt(normalizedIndex);
+    const float wave = sin(angle * 2.0f + frame->time * 0.7f + params->latent_w);
+    const float height = 3.5f * (1.0f - normalizedIndex)
+        + 0.85f * wave * (0.5f + params->topologyBlend);
+    const float scale = params->output_scale.y
+        * (0.075f + 0.16f * (1.0f - normalizedIndex));
+    const float hue = normalizedIndex + frame->time * params->pulse_material.w;
+    const float3 tint = epi_world_phase_colour(hue, 0.72f);
+
+    // Slender Gothic column proportion
+    const float pillarAspect = 1.6f + 2.8f * (1.0f - normalizedIndex);
+    const float metallic = 0.90f - 0.35f * normalizedIndex;
+    const float roughness = 0.14f + 0.26f * normalizedIndex;
+    const float emissive = (wave > 0.6f)
+        ? (0.5f + 0.9f * (wave - 0.6f))
+        : (0.12f + 0.35f * normalizedIndex);
+
+    // Semantic material role:
+    // - Accent: peak wave elevations or Fibonacci harmonic radial nodes
+    // - Form: inner golden nave (central 25% radius)
+    // - Structure: outer radiating colonnade arches
+    uint semanticRole = EPI_PHYLLOTAXIS_ROLE_STRUCTURE;
+    if (wave > 0.75f || (index % 34u == 0u || index % 55u == 0u)) {
+        semanticRole = EPI_PHYLLOTAXIS_ROLE_ACCENT;
+    } else if (normalizedIndex < 0.25f) {
+        semanticRole = EPI_PHYLLOTAXIS_ROLE_FORM;
+    }
+
+    instances[index].positionScale = (float4)(
+        radius * cos(angle), height, radius * sin(angle), fmax(scale, 0.01f));
+    instances[index].axisScale = (float4)(1.0f, pillarAspect, 1.0f, 1.0f);
+    instances[index].orientation = epi_world_y_rotation(-angle + 1.57079632679f);
+    instances[index].tintEmission = (float4)(tint, emissive);
+    instances[index].pbrOverride = (float4)(metallic, roughness, 0.0f, emissive);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = epi_phyllotaxis_material_role(semanticRole, recipe);
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_golden_phyllotaxis(index, params, frame, recipe, output->instances);
+}
+#endif

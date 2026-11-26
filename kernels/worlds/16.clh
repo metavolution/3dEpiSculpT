@@ -1,0 +1,98 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_DEEP_SEA_SIPHONOPHORES (Generator ID: 16)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_deep_sea_siphonophores(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    // Each siphonophore colony has 32 zooids along its stem, and there are 256 colonies
+    const uint colonies = 256u;
+    const uint zooids = 32u;
+    const uint activeCount = epi_world_active_count(recipe, colonies * zooids);
+    const uint i = min((index * colonies * zooids) / activeCount, colonies * zooids - 1u);
+    
+    const uint colonyId = i / zooids;
+    const uint zooidId = i % zooids;
+    
+    // Distribute colonies across the volume
+    const float theta = convert_float(colonyId) * EPI_WORLD_GOLDEN_ANGLE;
+    const float radius = sqrt(convert_float(colonyId)) * 0.7f;
+    const float y_offset = sin(convert_float(colonyId) * 2.3f) * 6.0f;
+    const float3 colony_root = (float3)(radius * cos(theta), y_offset, radius * sin(theta));
+    
+    // Zooid positions along the stem curve
+    const float t = frame->time * params->dynamics_seed.x * 0.4f;
+    const float stem_t = convert_float(zooidId) / convert_float(zooids);
+    const float curve_phase = t + convert_float(colonyId) * 0.7f;
+    
+    // Stem sine wave motion
+    const float3 stem_dir = normalize((float3)(
+        sin(curve_phase * 0.3f),
+        1.2f + 0.3f * sin(curve_phase * 0.5f),
+        cos(curve_phase * 0.2f)
+    ));
+    
+    // Audio Reactivity
+    float bass = params->audio_spectrum.x;
+    float mid = params->audio_spectrum.y;
+    
+    const float3 wiggle = (float3)(
+        sin(stem_t * 6.0f + curve_phase * 2.0f) * (0.4f + 0.5f * mid),
+        0.0f,
+        cos(stem_t * 5.0f + curve_phase * 1.8f) * (0.4f + 0.5f * bass)
+    );
+    
+    const float3 pos = colony_root + stem_dir * stem_t * 8.0f + wiggle * (1.0f - stem_t) * 0.6f;
+    
+    // Zooid pulsing and scale
+    const float pulse = 0.5f + 0.5f * sin(stem_t * 12.0f - curve_phase * 4.0f);
+    const float scale = params->output_scale.y * (0.04f + 0.08f * pulse * (1.0f - stem_t * 0.5f)) + 0.04f * bass;
+    
+    const float hue = 0.55f + 0.15f * pulse + stem_t * 0.1f;
+    const float3 tint = epi_world_phase_colour(hue, 0.9f);
+    
+    instances[index].positionScale = (float4)(pos, fmax(scale, 0.01f));
+    instances[index].orientation = epi_world_align_y(stem_dir + wiggle * 0.3f);
+    
+    // Emission pulses brightly as the wave travels down the stem
+    float emission = 0.05f + 2.5f * pow(pulse, 4.0f) + 0.8f * mid;
+    instances[index].tintEmission = (float4)(tint, emission);
+    
+    // Different types of zooids: nectophores (swimming bells) at the top, bracts and gastrozooids below
+    instances[index].primitiveId = (stem_t < 0.2f) ? 3u : 0u; // 3 = Tile (bell), 0 = Sphere (bract/tentacle)
+    instances[index].materialBand = colonyId % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = i;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_deep_sea_siphonophores(index, params, frame, recipe, output->instances);
+}
+#endif

@@ -1,0 +1,11 @@
+{
+    "version": 3,
+    "preset": "Hyperbolic Spiral Vision",
+    "presentation": "world",
+    "inner": "hyperbolic_honeycomb",
+    "reduction": "torus fold",
+    "seedType": "border",
+    "colorEffect": "alive_spiral",
+    "worldScale": 1.5,
+    "patternSpeed": 0.05
+}

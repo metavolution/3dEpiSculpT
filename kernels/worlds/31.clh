@@ -1,0 +1,266 @@
+// -----------------------------------------------------------------------------
+// Component: Neon Epimorphic Mirror-Chamber Bubblesphere (Generator ID: 31)
+// -----------------------------------------------------------------------------
+// A bounded, OpenCL-authored response to the kaleidoscope reference:
+//   120 faceted core carriers + 24 Hopf-like shell fibres + virtual mirror cells.
+//
+// Material bands are semantic delivery metadata, not a renderer-side guess:
+//   0 = form       (core surfaces and quiet particles)
+//   1 = structure  (braided shell and truss members)
+//   2 = accent     (symmetry nodes and energetic orbital particles)
+// Recipes with one or two bands collapse these roles deterministically. Vulkan
+// only receives the completed immutable `materialBand` for normal batching.
+// -----------------------------------------------------------------------------
+
+#define EPI_BUBBLE_CORE_COUNT 120u
+#define EPI_BUBBLE_SHELL_FIBRES 24u
+#define EPI_BUBBLE_SHELL_SAMPLES 32u
+#define EPI_BUBBLE_SHELL_COUNT (EPI_BUBBLE_SHELL_FIBRES * EPI_BUBBLE_SHELL_SAMPLES)
+#define EPI_BUBBLE_INSTANCE_COUNT 2048u
+#define EPI_BUBBLE_SECTOR_COUNT 12u
+
+#define EPI_BUBBLE_BAND_FORM 0u
+#define EPI_BUBBLE_BAND_STRUCTURE 1u
+#define EPI_BUBBLE_BAND_ACCENT 2u
+
+inline uint epi_bubble_material_role(const uint semanticRole,
+                                     const __constant WorldRecipeGpu* recipe) {
+    // The presentation palette has three authored roles. Clamping rather than
+    // modulo preserves form -> structure -> accent in reduced-band recipes.
+    return min(semanticRole, recipe->materialBandCount - 1u);
+}
+
+inline uint epi_bubble_polygon_side_count(
+    const __constant WorldRecipeGpu* recipe) {
+    const uint encoded = (recipe->flags & EPI_SCULPT_WORLD_MIRROR_TOPOLOGY_MASK)
+        >> EPI_SCULPT_WORLD_MIRROR_TOPOLOGY_SHIFT;
+    return 3u + min(encoded, 3u);
+}
+
+inline uint epi_bubble_accent_cell_stride(const uint polygonSides) {
+    // Sparse triangular chambers can support a frequent high-energy rhythm.
+    // Dense hexagonal chambers preserve depth by reserving accents for rarer
+    // cells, leaving most edges in the structural material role.
+    return 1u + 2u * (polygonSides - 3u);
+}
+
+inline float epi_bubble_particle_accent_threshold(const uint polygonSides) {
+    // The same bounded rule prevents dense cells from becoming a uniform glow.
+    return 0.64f + 0.05f * convert_float(polygonSides - 3u);
+}
+
+inline float3 epi_bubble_safe_normalize(const float3 value, const float3 fallback) {
+    const float lengthSquared = dot(value, value);
+    return lengthSquared > 1.0e-8f ? value * rsqrt(lengthSquared) : fallback;
+}
+
+inline void epi_world_write_neon_bubblesphere(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const float tau = 6.28318530718f;
+    const float goldenAngle = 2.39996322973f;
+    const float time = frame->time;
+    const float morph = clamp(frame->morph, 0.0f, 1.0f);
+    const float topologyBlend = clamp(params->topologyBlend, 0.0f, 1.0f);
+    const float globalScale = fmax(params->output_scale.x, 0.001f);
+    const float instanceScale = fmax(params->output_scale.y, 0.001f);
+    const uint polygonSides = epi_bubble_polygon_side_count(recipe);
+
+    if (index < EPI_BUBBLE_CORE_COUNT) {
+        // Fibonacci carriers form a low-discrepancy geodesic-like core. The
+        // five facet families approximate icosahedral rotational hierarchy.
+        const float carrier = convert_float(index);
+        const float z = 1.0f - (2.0f * carrier + 1.0f)
+            / convert_float(EPI_BUBBLE_CORE_COUNT);
+        const float radius = sqrt(fmax(1.0f - z * z, 0.0f));
+        const float phase = carrier * goldenAngle
+            + time * (0.16f + 0.10f * params->dynamics_seed.x);
+        const float3 normal = (float3)(radius * cos(phase), z, radius * sin(phase));
+        const uint facetFamily = index % 5u;
+        const bool isAccentFacet = facetFamily == 0u
+            && (index % epi_bubble_accent_cell_stride(polygonSides)) == 0u;
+        const bool isShadowFacet = facetFamily == 1u || facetFamily == 4u;
+        const uint role = isAccentFacet ? EPI_BUBBLE_BAND_ACCENT
+            : (isShadowFacet ? EPI_BUBBLE_BAND_STRUCTURE : EPI_BUBBLE_BAND_FORM);
+        const float facetPulse = 0.5f + 0.5f * sin(
+            phase * 2.0f + morph * tau + params->pulse_material.x);
+        const float coreRadius = (1.45f + 0.18f * facetPulse) * globalScale;
+        const float3 tint = epi_world_phase_colour(
+            carrier / convert_float(EPI_BUBBLE_CORE_COUNT)
+                + params->pulse_material.z + time * params->pulse_material.w,
+            0.70f + 0.25f * facetPulse);
+
+        WorldInstanceGpu instance;
+        instance.positionScale = (float4)(normal * coreRadius,
+                                           instanceScale * (0.16f + 0.05f * facetPulse));
+        instance.axisScale = (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+        instance.orientation = epi_world_align_y(normal);
+        instance.tintEmission = (float4)(tint,
+            0.24f + 0.42f * facetPulse + (isAccentFacet ? 0.36f : 0.0f));
+        instance.pbrOverride = (float4)(0.44f, isShadowFacet ? 0.42f : 0.26f,
+                                         0.0f, instance.tintEmission.w);
+        instance.primitiveId = 0u; // Sphere carriers collectively read as facets.
+        instance.materialBand = epi_bubble_material_role(role, recipe);
+        instance.flags = 1u;
+        instance.sourceIndex = index;
+        instances[index] = instance;
+        return;
+    }
+
+    if (index < EPI_BUBBLE_CORE_COUNT + EPI_BUBBLE_SHELL_COUNT) {
+        // Hopf-inspired braided shell; tangent orientation avoids CPU mesh work.
+        const uint shellIndex = index - EPI_BUBBLE_CORE_COUNT;
+        const uint fibre = shellIndex / EPI_BUBBLE_SHELL_SAMPLES;
+        const uint sample = shellIndex % EPI_BUBBLE_SHELL_SAMPLES;
+        const float fibrePhase = convert_float(fibre) / convert_float(EPI_BUBBLE_SHELL_FIBRES);
+        const float samplePhase = convert_float(sample) / convert_float(EPI_BUBBLE_SHELL_SAMPLES);
+        const float u = tau * samplePhase + time * 0.21f;
+        const float v = tau * fibrePhase + 2.0f * u + time * 0.13f;
+        const float shellRadius = (2.45f + 0.35f * sin(v + morph * tau)) * globalScale;
+        const float3 radial = (float3)(cos(u) * cos(v), sin(v), sin(u) * cos(v));
+        const float3 tangent = epi_bubble_safe_normalize(
+            (float3)(-sin(u) * cos(v) - 2.0f * cos(u) * sin(v),
+                     2.0f * cos(v),
+                     cos(u) * cos(v) - 2.0f * sin(u) * sin(v)),
+            (float3)(0.0f, 1.0f, 0.0f));
+        const uint knotStride = epi_bubble_accent_cell_stride(polygonSides);
+        const bool isKnotNode = (sample == 0u && fibre % knotStride == 0u)
+            || (fibre % 6u == 0u && sample % (8u * knotStride) == 0u);
+        const uint role = isKnotNode ? EPI_BUBBLE_BAND_ACCENT : EPI_BUBBLE_BAND_STRUCTURE;
+        const float braidPulse = 0.5f + 0.5f * sin(v * 1.5f + time * 1.6f);
+        const float3 tint = epi_world_phase_colour(fibrePhase + 0.32f + time * 0.025f,
+                                                    0.78f + 0.18f * braidPulse);
+
+        WorldInstanceGpu instance;
+        instance.positionScale = (float4)(radial * shellRadius,
+                                           instanceScale * (0.095f + 0.040f * braidPulse));
+        instance.axisScale = (float4)(0.75f, 1.0f, 1.75f, 1.0f);
+        instance.orientation = epi_world_align_y(tangent);
+        instance.tintEmission = (float4)(tint,
+            0.18f + 0.34f * braidPulse + (isKnotNode ? 0.22f : 0.0f));
+        instance.pbrOverride = (float4)(0.66f, 0.20f, 0.0f, instance.tintEmission.w);
+        instance.primitiveId = 1u; // Torus knot.
+        instance.materialBand = epi_bubble_material_role(role, recipe);
+        instance.flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+        instance.sourceIndex = index;
+        instances[index] = instance;
+        return;
+    }
+
+    // Finite virtual-mirror field: each cell has polygonal truss edges and one
+    // orbital particle. Sector/depth recurrence suggests reflection, boundedly.
+    // `local` is an OpenCL address-space qualifier, so retain the same meaning
+    // under a non-reserved identifier in device source.
+    const uint fieldIndex = index - EPI_BUBBLE_CORE_COUNT - EPI_BUBBLE_SHELL_COUNT;
+    const uint sides = polygonSides;
+    const uint cellStride = sides + 1u;
+    const uint cell = fieldIndex / cellStride;
+    const uint member = fieldIndex % cellStride;
+    const uint sector = cell % EPI_BUBBLE_SECTOR_COUNT;
+    const uint depth = (cell / EPI_BUBBLE_SECTOR_COUNT) % 4u;
+    const uint orbit = cell / (EPI_BUBBLE_SECTOR_COUNT * 4u);
+    const float sectorAngle = tau * convert_float(sector) / convert_float(EPI_BUBBLE_SECTOR_COUNT);
+    const float depthF = convert_float(depth);
+    const float orbitF = convert_float(orbit);
+    const float falloff = exp2(-0.58f * depthF);
+    const float radialDistance = (4.3f + 1.55f * depthF + 0.18f * orbitF) * globalScale;
+    const float3 radial = (float3)(cos(sectorAngle),
+        0.14f * sin(orbitF * 0.73f + time * 0.20f), sin(sectorAngle));
+    const float3 outward = epi_bubble_safe_normalize(radial, (float3)(1.0f, 0.0f, 0.0f));
+    const float3 tangent = epi_bubble_safe_normalize(
+        cross((float3)(0.0f, 1.0f, 0.0f), outward), (float3)(0.0f, 0.0f, 1.0f));
+    const float3 bitangent = epi_bubble_safe_normalize(cross(outward, tangent),
+                                                         (float3)(0.0f, 1.0f, 0.0f));
+    const float3 center = outward * radialDistance
+        + bitangent * (0.30f * sin(orbitF * 1.618f + time * 0.17f) * globalScale);
+    const float cellRadius = (0.68f + 0.06f * convert_float(sides)) * falloff * globalScale;
+
+    if (member < sides) {
+        const float edgeAngleA = tau * convert_float(member) / convert_float(sides) + 0.5f * sectorAngle;
+        const float edgeAngleB = tau * convert_float((member + 1u) % sides) / convert_float(sides)
+            + 0.5f * sectorAngle;
+        const float3 endpointA = center + cellRadius * (cos(edgeAngleA) * tangent + sin(edgeAngleA) * bitangent);
+        const float3 endpointB = center + cellRadius * (cos(edgeAngleB) * tangent + sin(edgeAngleB) * bitangent);
+        const float3 edge = endpointB - endpointA;
+        const float edgeLength = length(edge);
+        const float3 edgeDirection = epi_bubble_safe_normalize(edge, tangent);
+        const bool isAccentStrut = member == 0u
+            && (cell % epi_bubble_accent_cell_stride(sides)) == 0u;
+        const uint role = isAccentStrut ? EPI_BUBBLE_BAND_ACCENT : EPI_BUBBLE_BAND_STRUCTURE;
+        const float trussPulse = 0.5f + 0.5f * sin(
+            sectorAngle * 2.0f + depthF * 1.7f + convert_float(member) + time * 1.4f);
+        const float3 tint = epi_world_phase_colour(0.30f + 0.10f * depthF + 0.03f * orbitF,
+                                                    0.72f + 0.24f * trussPulse);
+
+        WorldInstanceGpu instance;
+        instance.positionScale = (float4)(0.5f * (endpointA + endpointB),
+                                           instanceScale * (0.72f + 0.22f * trussPulse) * falloff);
+        // TrussStrut's fixed 1.35-unit local height is scaled to its edge.
+        instance.axisScale = (float4)(1.0f, edgeLength / 1.35f, 1.0f, 1.0f);
+        instance.orientation = epi_world_align_y(edgeDirection);
+        instance.tintEmission = (float4)(tint,
+            (0.13f + 0.30f * trussPulse + (isAccentStrut ? 0.18f : 0.0f)) * falloff);
+        instance.pbrOverride = (float4)(0.72f, 0.17f, 0.0f, instance.tintEmission.w);
+        instance.primitiveId = 7u; // TrussStrut.
+        instance.materialBand = epi_bubble_material_role(role, recipe);
+        instance.flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+        instance.sourceIndex = index;
+        instances[index] = instance;
+        return;
+    }
+
+    // Sparse orbital particles make the receding, emissive depth hierarchy.
+    const float orbitalPhase = sectorAngle * 1.618f + orbitF * goldenAngle
+        + depthF * 0.83f + time * (0.52f + 0.20f * topologyBlend);
+    const float energy = 0.5f + 0.5f * sin(orbitalPhase + params->pulse_material.y);
+    const uint role = energy > epi_bubble_particle_accent_threshold(sides)
+        ? EPI_BUBBLE_BAND_ACCENT : EPI_BUBBLE_BAND_FORM;
+    const float3 particlePosition = center
+        + cellRadius * 0.58f * (cos(orbitalPhase) * tangent + sin(orbitalPhase) * bitangent);
+    const float3 tint = epi_world_phase_colour(0.58f + energy * 0.22f + depthF * 0.06f,
+                                                0.70f + 0.28f * energy);
+
+    WorldInstanceGpu instance;
+    instance.positionScale = (float4)(particlePosition,
+        instanceScale * (0.050f + 0.085f * energy) * falloff);
+    instance.axisScale = (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    instance.orientation = epi_world_align_y(outward);
+    instance.tintEmission = (float4)(tint, (0.20f + 0.92f * energy) * falloff);
+    instance.pbrOverride = (float4)(0.30f, 0.12f + 0.22f * (1.0f - energy), 0.0f,
+                                     instance.tintEmission.w);
+    instance.primitiveId = 0u; // Orbital sphere.
+    instance.materialBand = epi_bubble_material_role(role, recipe);
+    instance.flags = 1u;
+    instance.sourceIndex = index;
+    instances[index] = instance;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    const uint activeInstanceCount = epi_world_active_count(recipe, EPI_BUBBLE_INSTANCE_COUNT);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+    epi_world_write_neon_bubblesphere(index, params, frame, recipe, output->instances);
+}
+#endif

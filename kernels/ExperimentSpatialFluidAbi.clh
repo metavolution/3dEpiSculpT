@@ -1,0 +1,35 @@
+#ifndef EPI_EXPERIMENT_SPATIAL_FLUID_ABI_CLH
+#define EPI_EXPERIMENT_SPATIAL_FLUID_ABI_CLH
+
+// OpenCL mirror of ExperimentSpatialFluidAbi.h.  The solver state deliberately
+// differs semantically from MistVoxelGpu even though both occupy two float4s.
+typedef struct SpatialFluidVoxelGpu {
+    float density;
+    float vx;
+    float vy;
+    float vz;
+    float hue;
+    float energy;
+    float chemical_u;
+    float chemical_v;
+} SpatialFluidVoxelGpu;
+
+typedef struct SpatialFluidConfigGpu {
+    float dt;
+    float advection;
+    float curl_str;
+    float viscosity;
+    float pulse_freq;
+    float seed_width;
+    float seed_alpha;
+    float blend;
+    float time;
+    float latent_w;
+    float4 pulse_material;
+    float acoustic_energy;
+    float spectral_centroid;
+    float kuramoto_order;
+    float kuramoto_phase;
+} SpatialFluidConfigGpu;
+
+#endif // EPI_EXPERIMENT_SPATIAL_FLUID_ABI_CLH

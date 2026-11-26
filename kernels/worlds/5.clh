@@ -1,0 +1,189 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_CELL120_HOLOGRAM (Generator ID: 5)
+// -----------------------------------------------------------------------------
+
+#include "EpiCell120Vertices.clh"
+
+inline void epi_world_write_cell120_hologram(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // The 600 states are factored as five 120-state phase shells.  Every shell
+    // contains 60 paired sites: the two parity states form a double helix and
+    // each site's complex phase z = exp(i*qubitPhase) drives a Bloch-like spin
+    // offset, knot precession, colour, and emission.  Incommensurate phi/sqrt2
+    // waves frustrate local alignment, producing a spin-liquid rather than a
+    // rigid crystal.  This is a dynamic 120-cell phase foliation: it preserves
+    // the 5 x 120 holographic organization while presenting that organization
+    // as a legible quantum lattice instead of pretending to be a static mesh.
+    const uint activeCount = epi_world_active_count(recipe, 600u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 600.0f
+            / convert_float(activeCount)),
+        599u);
+    const uint shell = sourceIndex / 120u;
+    const uint shellIndex = sourceIndex % 120u;
+    const uint strand = shellIndex & 1u;
+    const uint site = shellIndex >> 1u;
+
+    const float tau = 6.28318530718f;
+    const float phi = 1.61803398875f;
+    const float shellF = convert_float(shell);
+    const float strandF = convert_float(strand);
+    const float u = (convert_float(site) + 0.5f) / 60.0f;
+    const float centeredU = u - 0.5f;
+    const float tempo = 0.46f + 2.2f * fabs(params->dynamics_seed.x);
+    const float evolution = frame->time * tempo;
+    const float shellPhase = shellF * tau / 5.0f;
+
+    // Antiferromagnetic parity competes with irrational neighbour waves.  No
+    // single global orientation can satisfy all terms, which is the visual
+    // essence of the spin-liquid state used here.
+    const float latticePhase = tau * (u * (5.0f + shellF) + 0.5f * strandF);
+    const float frustratedA = sin(phi * latticePhase + shellPhase - evolution * 1.13f);
+    const float frustratedB = cos(1.41421356237f * latticePhase
+        - shellPhase * phi + evolution * 0.79f);
+    const float frustration = 0.5f * (frustratedA + frustratedB);
+    const float coherence = clamp(
+        0.38f + 0.50f * params->topologyBlend
+            + 0.12f * cos(latticePhase - evolution),
+        0.08f, 1.0f);
+
+    // z = cos(theta) + i sin(theta) is the site's complex-plane q-bit.  The
+    // polar component opens it into a Bloch-like spin vector so phase remains
+    // visible simultaneously as position, orientation, and radiance.
+    const float qubitPhase = latticePhase + evolution * (1.35f + 0.07f * shellF)
+        + params->latent_w * phi + 0.72f * frustration;
+    const float polar = 1.57079632679f
+        + (0.46f - 0.22f * coherence) * sin(latticePhase / phi - evolution);
+    const float3 spin = (float3)(
+        cos(qubitPhase) * sin(polar),
+        cos(polar),
+        sin(qubitPhase) * sin(polar));
+
+    const float turns = 2.5f + 0.25f * shellF;
+    const float helixAngle = tau * turns * u + strandF * 3.14159265359f
+        + shellPhase + evolution * (0.18f + 0.025f * shellF);
+    const float shellRadius = 1.55f + 0.54f * shellF;
+    const float radial = shellRadius + 0.20f * frustration + 0.12f * spin.y;
+
+    // w is never flattened into a fake fourth screen axis.  It modulates a
+    // bounded stereographic perspective, making latent 4D motion read as
+    // nested shells breathing through one another without singularities.
+    const float w4 = 0.72f * cos(qubitPhase * 0.5f + shellPhase)
+        + 0.18f * params->latent_w;
+    const float perspective = 2.75f / (2.75f - 0.42f * w4);
+    const float3 radialDirection = (float3)(cos(helixAngle), 0.0f, sin(helixAngle));
+    const float3 tangentDirection = normalize((float3)(
+        -sin(helixAngle) * turns * tau,
+        10.8f,
+        cos(helixAngle) * turns * tau));
+    const float3 spinOffset = 0.24f * spin.x * radialDirection
+        + 0.20f * spin.z * normalize(cross(tangentDirection, radialDirection));
+    float3 position = (float3)(
+        radial * radialDirection.x,
+        10.8f * centeredU + 0.22f * spin.y + (shellF - 2.0f) * 0.08f,
+        radial * radialDirection.z) + spinOffset;
+    position *= perspective * params->output_scale.x;
+
+    // Exact-polytope 4D projection
+    float4 v4 = cell120_vertices[sourceIndex];
+    // 4D SO(4) isoclinic double-rotation driven by dynamic rotors and time
+    const float thetaL = params->rotor_alpha + frame->time * params->dynamics_seed.x * 0.15f;
+    const float thetaR = params->rotor_beta + frame->time * params->dynamics_seed.x * 0.0927f;
+    float4 rot_v4 = epi_rotate_so4(v4, thetaL, thetaR, 0.0f, 0.0f);
+    if (fabs(params->rotor_theta_4d) > 1e-5f) {
+        const float cosT = cos(params->rotor_theta_4d);
+        const float sinT = sin(params->rotor_theta_4d);
+        const float zw_z = rot_v4.z * cosT - rot_v4.w * sinT;
+        const float zw_w = rot_v4.z * sinT + rot_v4.w * cosT;
+        rot_v4.z = zw_z;
+        rot_v4.w = zw_w;
+    }
+    float perspective4 = 2.75f / (2.75f - 0.72f * rot_v4.w);
+    float3 exactPosition = (float3)(rot_v4.x, rot_v4.y, rot_v4.z) * perspective4 * 5.0f * params->output_scale.x;
+
+    // Morph between quantum-helix (spin-liquid) and exact-polytope
+    // frame->morph is exposed from the host, mapping 0.0 to helix and 1.0 to exact.
+    float morphT = clamp(frame->morph, 0.0f, 1.0f);
+    position = mix(position, exactPosition, morphT);
+
+    // Align every shared torus-knot mesh to the helix, then rotate it around
+    // that tangent by its own complex phase.  The individual objects therefore
+    // spin as q-bits; there is no global CPU-authored rotation masquerading as
+    // local dynamics.
+    const float4 alignToHelix = epi_world_align_y(tangentDirection);
+    const float4 qubitSpin = epi_world_axis_rotation(
+        tangentDirection,
+        qubitPhase * (1.0f + 0.35f * coherence) + evolution * 2.4f);
+    const float4 orientation = epi_world_quaternion_multiply(qubitSpin, alignToHelix);
+
+    const float phaseColour = qubitPhase / tau + params->pulse_material.z
+        + frame->time * params->pulse_material.w + 0.07f * shellF;
+    float3 tint = epi_world_phase_colour(phaseColour, coherence);
+    // A cool quantum floor keeps low-energy sites readable against the deep
+    // atmosphere while coherent sites retain the full phase-wheel spectrum.
+    tint = mix((float3)(0.10f, 0.22f, 0.46f), tint, 0.62f + 0.38f * coherence);
+    const float probability = 0.5f + 0.5f * spin.y;
+    const float pulse = 0.5f + 0.5f * sin(qubitPhase + evolution * 1.7f);
+    const float scale = params->output_scale.y
+        * (0.20f + 0.035f * shellF + 0.055f * probability + 0.025f * pulse);
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: innermost quantum core (shell 0).
+    // Role 1 = Structure: intermediate 4D foliation shells (shells 1-3).
+    // Role 2 = Accent: outer holographic horizon (shell 4) and resonant spin-slip nodes.
+    uint semanticRole = 1u;
+    if (shell == 0u) {
+        semanticRole = 0u;
+    } else if (shell == 4u || (coherence > 0.80f && pulse > 0.82f)) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    if (semanticRole == 2u) {
+        tint = mix(tint, (float3)(1.0f, 0.92f, 0.45f), 0.65f);
+    } else if (semanticRole == 1u) {
+        tint = mix(tint, (float3)(0.82f, 0.25f, 0.92f), 0.35f);
+    }
+
+    const float hologramRadiance = (semanticRole == 2u)
+        ? (0.45f + 0.95f * pulse + 0.35f * coherence)
+        : ((semanticRole == 1u)
+            ? (0.12f + 0.22f * coherence + 0.08f * fabs(frustration))
+            : (0.04f + 0.15f * coherence));
+
+    instances[index].positionScale = (float4)(position, fmax(scale, 0.035f));
+    instances[index].axisScale = (float4)(0.85f, 1.25f + 0.4f * pulse, 0.85f, 1.0f);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, hologramRadiance);
+
+    // PBR Overrides: metallic, roughness, transmission, reserved
+    if (semanticRole == 2u) {
+        instances[index].pbrOverride = (float4)(0.95f, 0.08f, 0.0f, 0.0f);
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.65f, 0.18f, 0.25f, 0.0f);
+    } else {
+        instances[index].pbrOverride = (float4)(0.88f, 0.12f, 0.0f, 0.0f);
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = sourceIndex;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_cell120_hologram(index, params, frame, recipe, output->instances);
+}
+#endif

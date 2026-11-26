@@ -1,0 +1,102 @@
+// -----------------------------------------------------------------------------
+// Component: Kuramoto Hyperbolic Synchronization Canopy 3.5D (Generator ID: 26)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_kuramoto_hyperbolic_canopy_35d(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 1024.0f
+            / convert_float(activeCount)),
+        1023u);
+
+    const uint ringCount = 32u;
+    const uint nodesPerRing = 32u;
+    const uint ringIdx = sourceIndex / nodesPerRing;
+    const uint nodeIdx = sourceIndex % nodesPerRing;
+
+    const float tau = 6.28318530718f;
+    const float ringFrac = (convert_float(ringIdx) + 1.0f) / (convert_float(ringCount) + 1.0f);
+    const float nodeFrac = convert_float(nodeIdx) / convert_float(nodesPerRing);
+
+    const float evolution = frame->time * (0.28f + 0.18f * fabs(params->dynamics_seed.x));
+
+    const float r = tanh(ringFrac * 2.8f);
+    const float theta = nodeFrac * tau + (ringIdx % 2u ? 0.098f : 0.0f);
+
+    const float naturalFreq = 1.0f + 0.5f * sin(convert_float(nodeIdx) * 1.618f);
+    const float couplingStrength = 1.8f * clamp(params->topologyBlend, 0.2f, 1.0f);
+    const float syncPhase = theta * 4.0f + evolution * naturalFreq
+        + couplingStrength * sin(ringFrac * tau - evolution * 0.8f);
+
+    const float metricFactor = 2.0f / fmax(1.0f - r * r, 0.08f);
+    const float height = 1.2f * log(metricFactor) + 0.45f * sin(syncPhase) * params->output_scale.y;
+
+    const float worldRadius = 4.2f * params->output_scale.x * r;
+    const float x = worldRadius * cos(theta);
+    const float z = worldRadius * sin(theta);
+    const float y = height - 1.5f;
+
+    const float dz_dr = 1.2f * (2.0f * r / fmax(1.0f - r * r, 0.08f));
+    const float3 normal = normalize((float3)(-cos(theta) * dz_dr, 1.0f, -sin(theta) * dz_dr));
+    const float4 orientation = epi_world_align_y(normal);
+
+    const float coherence = 0.5f + 0.5f * cos(syncPhase);
+    const float scale = params->output_scale.y * 0.08f * (0.75f + 0.35f * coherence);
+
+    uint band = 0u;
+    if (r < 0.35f) {
+        band = 1u;
+    } else if (r > 0.82f) {
+        band = 2u;
+    }
+
+    const float3 tint = (band == 1u)
+        ? (float3)(0.98f, 0.68f, 0.12f)
+        : ((band == 2u)
+            ? (float3)(0.14f, 0.88f, 0.92f)
+            : (float3)(0.10f, 0.82f, 0.45f));
+
+    const float emission = 0.2f + 0.5f * coherence + (band == 1u ? 0.3f : 0.0f);
+
+    instances[index].positionScale = (float4)(x, y, z, scale);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = band % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_kuramoto_hyperbolic_canopy_35d(index, params, frame, recipe, output->instances);
+}
+#endif

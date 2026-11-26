@@ -1,0 +1,31 @@
+#ifndef EPI_VECTOR_FIELDS_CLH
+#define EPI_VECTOR_FIELDS_CLH
+
+// -------------------------------------------------------------------------------------------------
+// Educational Annotation: Divergence-Free Vector Fields (Curl)
+// -------------------------------------------------------------------------------------------------
+// A curl field guarantees a divergence-free (incompressible) flow because the divergence
+// of a curl is always zero (div(curl(F)) = 0). This is essential in fluid dynamics 
+// because it prevents the density of the advected fluid from accumulating at sinks or 
+// dispersing infinitely.
+// -------------------------------------------------------------------------------------------------
+
+#ifndef EPI_SCULPT_PI
+#define EPI_SCULPT_PI 3.14159265359f
+#endif
+
+__attribute__((noinline)) float3 epi_curl_field(float3 p) {
+    const float pi = EPI_SCULPT_PI;
+    float sx = sin(pi * p.x); float cx = cos(pi * p.x);
+    float sy = sin(pi * p.y); float cy = cos(pi * p.y);
+    float sz = sin(pi * p.z); float cz = cos(pi * p.z);
+    
+    // Compute the exact analytical curl of a 3D periodic sine field.
+    float vx = -pi * (sx * sy + cx * cz);
+    float vy = -pi * (sy * sz + cx * cy) + pi * sin(2.0f * pi * p.z);
+    float vz = -pi * (sx * sz + cy * cz) - pi * sin(2.0f * pi * p.y);
+    
+    return (float3)(vx, vy, vz);
+}
+
+#endif // EPI_VECTOR_FIELDS_CLH

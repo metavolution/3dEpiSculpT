@@ -1,0 +1,89 @@
+// -----------------------------------------------------------------------------
+// Component: Clifford Vortex Kaleidoscope Mandala 3.5D (Generator ID: 24)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_toroidal_foliation_35d(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint ringCount = 16u;
+    const uint cellsPerRing = 64u;
+    const uint ringIdx = (index / cellsPerRing) % ringCount;
+    const uint cellIdx = index % cellsPerRing;
+
+    const float ringFrac = convert_float(ringIdx) / convert_float(ringCount);
+    const float cellFrac = convert_float(cellIdx) / convert_float(cellsPerRing);
+
+    const float evolution = frame->time * (0.20f + 0.15f * params->dynamics_seed.x);
+    const float thetaMajor = ringFrac * 6.28318530718f + evolution * 0.4f;
+    const float kaleidoPetals = 8.0f;
+    const float thetaMinor = cellFrac * 6.28318530718f * 3.0f + evolution * 1.2f
+        + sin(kaleidoPetals * thetaMajor) * 0.45f * params->topologyBlend;
+
+    const float w = sin(thetaMajor * 2.0f) * cos(thetaMinor * 3.0f + evolution);
+
+    const float R_major = 3.2f * params->output_scale.x * (1.0f + 0.15f * w);
+    const float r_minor = 1.1f * (0.8f + 0.2f * cos(thetaMajor * 4.0f + evolution));
+
+    const float x = (R_major + r_minor * cos(thetaMinor)) * cos(thetaMajor);
+    const float y = r_minor * sin(thetaMinor) + 0.35f * w * params->output_scale.y;
+    const float z = (R_major + r_minor * cos(thetaMinor)) * sin(thetaMajor);
+
+    const float3 tangent = normalize((float3)(
+        -sin(thetaMajor) * (R_major + r_minor * cos(thetaMinor)) - r_minor * sin(thetaMinor) * cos(thetaMajor),
+        r_minor * cos(thetaMinor),
+        cos(thetaMajor) * (R_major + r_minor * cos(thetaMinor)) - r_minor * sin(thetaMinor) * sin(thetaMajor)
+    ));
+    const float4 orientation = epi_world_align_y(tangent);
+
+    const float pulse = 0.5f + 0.5f * sin(evolution * 3.0f + convert_float(cellIdx) * 0.1f);
+    const float scale = params->output_scale.y * 0.09f * (0.8f + 0.2f * pulse);
+
+    const uint band = (ringIdx % 3u);
+    const float3 tint = (band == 0u)
+        ? (float3)(0.78f, 0.18f, 0.95f)
+        : ((band == 1u)
+            ? (float3)(0.98f, 0.65f, 0.15f)
+            : (float3)(0.15f, 0.92f, 0.88f));
+
+    const float emission = 0.25f + 0.45f * pulse + 0.3f * fabs(w);
+
+    instances[index].positionScale = (float4)(x, y, z, scale);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = band % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_toroidal_foliation_35d(index, params, frame, recipe, output->instances);
+}
+#endif

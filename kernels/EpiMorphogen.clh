@@ -1,0 +1,80 @@
+#ifndef EPI_MORPHOGEN_CLH
+#define EPI_MORPHOGEN_CLH
+
+// -------------------------------------------------------------------------------------------------
+// EpiMorphogen: Turing Pattern / Reaction-Diffusion Simulator
+// Educational Annotation:
+// This module implements the Gray-Scott reaction-diffusion model to generate 
+// organic bioluminescent patterns (spots, stripes, mazes) that couple with 
+// the underlying advective fluid fields.
+// -------------------------------------------------------------------------------------------------
+
+inline float2 epi_gray_scott(
+    float u, 
+    float v, 
+    float lu, 
+    float lv, 
+    float feed, 
+    float kill, 
+    float dt, 
+    float du, 
+    float dv) 
+{
+    float reaction = u * v * v;
+    float next_u = u + (du * lu - reaction + feed * (1.0f - u)) * dt;
+    float next_v = v + (dv * lv + reaction - (feed + kill) * v) * dt;
+    return (float2)(clamp(next_u, 0.0f, 1.0f), clamp(next_v, 0.0f, 1.0f));
+}
+
+inline float3 epi_belousov_zhabotinsky(
+    float u, float v, float w, 
+    float lu, float lv, float lw,
+    float alpha, float beta, float gamma,
+    float dt, float du, float dv, float dw) 
+{
+    float next_u = u + (du * lu + u * (alpha * v - gamma * w)) * dt;
+    float next_v = v + (dv * lv + v * (beta * w - alpha * u)) * dt;
+    float next_w = w + (dw * lw + w * (gamma * u - beta * v)) * dt;
+    return (float3)(clamp(next_u, 0.0f, 1.0f), clamp(next_v, 0.0f, 1.0f), clamp(next_w, 0.0f, 1.0f));
+}
+
+// -----------------------------------------------------------------------------
+// Educational Annotation: 3D/4D VOLUMETRIC EPIMORPHISM INJECTION
+// -----------------------------------------------------------------------------
+// We map the 3D voxel coordinate into the continuous mathematical domain 
+// and evaluate the full epimorphic loop (affine -> inner -> affine -> fold).
+// This injects the procedural fractal directly into the cellular automata
+// memory, causing the mathematical structure to "bleed" into the fluid!
+// -----------------------------------------------------------------------------
+inline float4 epi_evaluate_morphogen_injection(
+    float fx_idx, float fy_idx, float fz_idx,
+    float4 current_fluid,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame) 
+{
+    float3 world_pos = ((float3)(fx_idx, fy_idx, fz_idx) / (float)EPI_SCULPT_VOLUME_GRID_SIZE) * 5.0f - 2.5f;
+    float orbit_energy = 0.0f;
+    float final_seed_weight = 0.0f;
+    float orbit_trap = 0.0f;
+    
+    // Evaluate the 3D/4D fractal loop for this specific voxel
+    float3 feedback_pos = epi_evaluate_fractal_loop(
+        world_pos, 0.5f, params, frame, world_pos,
+        &orbit_energy, &final_seed_weight, &orbit_trap);
+        
+    // Compute surface boundary proximity (SDF-like injection)
+    float distance = length(feedback_pos - world_pos);
+    float injection_mask = 1.0f - smoothstep(0.0f, 0.2f, fabs(distance - 1.0f));
+    float injection_density = clamp(injection_mask * final_seed_weight, 0.0f, 1.0f);
+    
+    // Directly inject the mathematical geometry into the fluid / morphogen memory
+    current_fluid.w = clamp(current_fluid.w + injection_density * 0.15f, 0.0f, 2.0f);
+    
+    // Inject Species V (bioluminescence) at the fractal boundary
+    current_fluid.y = clamp(current_fluid.y + injection_density * 0.2f, 0.0f, 1.0f);
+
+    current_fluid.w *= clamp(params->temporal_control.x, 0.0f, 1.0f); // Density decay
+    return current_fluid;
+}
+
+#endif // EPI_MORPHOGEN_CLH

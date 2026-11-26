@@ -1,0 +1,114 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_L_SYSTEM_FRACTAL (Generator ID: 18)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_lsystem(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    const uint activeCount = epi_world_active_count(recipe, 16383u);
+    const uint i = min(index, activeCount - 1);
+    
+    // A 3D fractal branching tree (L-system approximation)
+    // We can map 'i' to a path in a binary tree: i+1 is the node index.
+    // 1 is root. Left child is 2*n, right child is 2*n+1.
+    uint n = i + 1;
+    float3 pos = (float3)(0.0f, -0.8f, 0.0f); // Base position
+    float3 dir = (float3)(0.0f, 1.0f, 0.0f);  // Initial direction
+    float3 right = (float3)(1.0f, 0.0f, 0.0f);
+    float3 fwd = (float3)(0.0f, 0.0f, 1.0f);
+    
+    // Audio reactivity: Bass (x), Mid (y), Treble (z), Flux (w)
+    float bass = params->audio_spectrum.x;
+    float mid = params->audio_spectrum.y;
+    float flux = params->audio_spectrum.w;
+    
+    // Scale reduction modulated by mid frequencies
+    float scale = 0.4f + 0.15f * mid;
+    float time = frame->time * 0.5f;
+    // Branching angle driven by base time oscillation + sub-bass pulse
+    float angle = 0.6f + 0.2f * sin(time) + 0.4f * bass;
+    
+    // Trace the path from root to node n
+    uint depth = 0;
+    uint temp = n;
+    while(temp > 1) { depth++; temp >>= 1; }
+    
+    // We have 'depth' bits. Reconstruct the path from MSB-1 to LSB.
+    for (uint b = 1; b <= depth; ++b) {
+        // Move along dir
+        pos += dir * scale;
+        scale *= (0.75f - 0.1f * flux); // Branch scale reduction, tighter with flux
+        
+        uint bit = (n >> (depth - b)) & 1u;
+        float branch_angle = (bit == 0) ? angle : -angle;
+        
+        // Rotate dir around an axis (alternate axes based on depth)
+        float3 axis = (b % 2 == 1) ? right : fwd;
+        float c = cos(branch_angle);
+        float s = sin(branch_angle);
+        
+        // Rodrigues rotation formula
+        dir = dir * c + cross(axis, dir) * s + axis * dot(axis, dir) * (1.0f - c);
+        right = right * c + cross(axis, right) * s + axis * dot(axis, right) * (1.0f - c);
+        fwd = fwd * c + cross(axis, fwd) * s + axis * dot(axis, fwd) * (1.0f - c);
+    }
+    
+    // Construct orientation quaternion from the frame
+    // We want local +Y to align with 'dir'. 
+    // Default Y is (0,1,0).
+    float3 defaultY = (float3)(0.0f, 1.0f, 0.0f);
+    float3 rotAxis = cross(defaultY, dir);
+    float rotLen = length(rotAxis);
+    float4 q = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+    if (rotLen > 1e-4f) {
+        rotAxis /= rotLen;
+        float d = dot(defaultY, dir);
+        float halfAngle = acos(clamp(d, -1.0f, 1.0f)) * 0.5f;
+        q = (float4)(rotAxis * sin(halfAngle), cos(halfAngle));
+    }
+    
+    instances[index].positionScale = (float4)(pos, scale * 0.5f);
+    instances[index].orientation = q;
+    
+    // Tint based on depth, time, and audio flux
+    float hue = (float)depth * 0.15f + time * 0.2f + flux * 0.5f;
+    // Brightness pulses with bass
+    float brightness = 0.8f + 0.5f * bass;
+    instances[index].tintEmission = (float4)(hue, 0.8f, brightness, 0.1f + 0.4f * (float)depth / 13.0f);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = depth % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = i;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_lsystem(index, params, frame, recipe, output->instances);
+}
+#endif

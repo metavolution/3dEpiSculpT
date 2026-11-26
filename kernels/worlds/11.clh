@@ -1,0 +1,147 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_PROCEDURAL_WOODLAND (Generator ID: 11)
+// -----------------------------------------------------------------------------
+
+__constant float procedural_woodland_trees[18 * 7] = {
+    -6.7f, -5.8f, 7.8f, 0.26f, 2.8f, 5.7f, 0.66f,
+    -4.8f, -4.9f, 6.1f, 0.21f, 2.3f, 4.5f, 0.75f,
+    -2.9f, -5.7f, 8.6f, 0.29f, 3.0f, 6.1f, 0.61f,
+    -0.8f, -4.5f, 5.5f, 0.23f, 2.1f, 4.2f, 0.72f,
+     1.2f, -5.2f, 7.1f, 0.28f, 2.6f, 5.5f, 0.68f,
+     3.4f, -4.8f, 6.8f, 0.25f, 2.4f, 4.8f, 0.71f,
+     5.5f, -5.9f, 8.1f, 0.27f, 2.9f, 5.9f, 0.64f,
+     7.1f, -4.6f, 5.9f, 0.22f, 2.2f, 4.4f, 0.76f,
+    -7.2f, -2.5f, 6.9f, 0.24f, 2.5f, 5.1f, 0.69f,
+    -5.1f, -1.8f, 8.3f, 0.28f, 2.7f, 5.8f, 0.63f,
+    -2.5f, -2.1f, 5.8f, 0.21f, 2.0f, 4.1f, 0.78f,
+     0.5f, -2.7f, 7.5f, 0.26f, 2.8f, 5.6f, 0.65f,
+     2.8f, -1.9f, 6.4f, 0.23f, 2.3f, 4.7f, 0.74f,
+     4.9f, -2.8f, 8.7f, 0.30f, 3.1f, 6.3f, 0.60f,
+     6.8f, -2.2f, 7.2f, 0.25f, 2.6f, 5.3f, 0.67f,
+    -3.8f,  1.2f, 7.7f, 0.27f, 2.7f, 5.7f, 0.65f,
+     1.8f,  0.9f, 6.6f, 0.24f, 2.4f, 5.0f, 0.72f,
+    -0.5f,  2.5f, 8.2f, 0.29f, 2.9f, 6.0f, 0.62f
+};
+
+inline void epi_world_write_procedural_woodland(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    // 18 trees * 8 parts = 144 instances
+    const uint treeIndex = index / 8u;
+    const uint part = index % 8u;
+    if (treeIndex >= 18u) return;
+
+
+    const float tx = procedural_woodland_trees[treeIndex * 7 + 0];
+    const float tz = procedural_woodland_trees[treeIndex * 7 + 1];
+    const float trunkHeight = procedural_woodland_trees[treeIndex * 7 + 2];
+    const float trunkRadius = procedural_woodland_trees[treeIndex * 7 + 3];
+    const float canopyRadius = procedural_woodland_trees[treeIndex * 7 + 4];
+    const float canopyLift = procedural_woodland_trees[treeIndex * 7 + 5];
+    const float shade = procedural_woodland_trees[treeIndex * 7 + 6];
+
+    float3 pos = (float3)(tx, 0.0f, tz);
+    float3 scale = (float3)(1.0f);
+    float4 orientation = (float4)(0.0f, 0.0f, 0.0f, 1.0f); // xyzw quaternion
+    uint primitive = 0u;
+    uint materialBand = 0u;
+
+    if (part == 0) { // Trunk
+        pos.y = trunkHeight * 0.5f;
+        scale = (float3)(trunkRadius, trunkHeight, trunkRadius);
+        primitive = 2u; // Cylinder
+        materialBand = 0u;
+    } else if (part == 1) { // Main canopy
+        pos.y = canopyLift;
+        scale = (float3)(canopyRadius, canopyRadius * 0.82f, canopyRadius);
+        primitive = 0u; // Sphere
+        materialBand = shade < 0.65f ? 2u : 1u;
+    } else if (part == 2) { // Left crown
+        float lobeRadius = canopyRadius * 0.68f;
+        pos.x -= lobeRadius * 0.55f;
+        pos.y = canopyLift + lobeRadius * 0.18f;
+        pos.z += lobeRadius * 0.22f;
+        scale = (float3)(lobeRadius);
+        primitive = 0u;
+        materialBand = shade < 0.65f ? 2u : 1u;
+    } else if (part == 3) { // Right crown
+        float lobeRadius = canopyRadius * 0.68f;
+        pos.x += lobeRadius * 0.48f;
+        pos.y = canopyLift + lobeRadius * 0.35f;
+        pos.z -= lobeRadius * 0.30f;
+        scale = (float3)(lobeRadius);
+        primitive = 0u;
+        materialBand = shade < 0.65f ? 2u : 1u;
+    } else if (part < 7) { // 4,5,6 Branches
+        uint branch = part - 4;
+        float angle = 2.0943951f * (float)branch + shade * 0.41f;
+        float length = canopyRadius * 0.72f;
+        float bx = tx + cos(angle) * length * 0.28f;
+        float by = canopyLift - length * 0.30f;
+        float bz = tz + sin(angle) * length * 0.28f;
+        
+        pos = (float3)(bx, by, bz);
+        scale = (float3)(trunkRadius * 0.46f, length, trunkRadius * 0.46f);
+        primitive = 2u; // Cylinder
+        materialBand = 0u;
+        
+        float halfAngle = 0.86f * 0.5f;
+        float s = sin(halfAngle);
+        orientation = (float4)(sin(angle) * s, 0.0f, -cos(angle) * s, cos(halfAngle));
+    } else { // 7 Ground cover
+        pos.y = 0.16f;
+        scale = (float3)(canopyRadius * 0.78f, 0.18f, canopyRadius * 0.68f);
+        primitive = 0u; // Sphere
+        materialBand = 3u;
+    }
+
+    float qx = orientation.x, qy = orientation.y, qz = orientation.z, qw = orientation.w;
+    float x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+    float xx = qx * x2, xy = qx * y2, xz = qx * z2;
+    float yy = qy * y2, yz = qy * z2, zz = qz * z2;
+    float wx = qw * x2, wy = qw * y2, wz = qw * z2;
+
+    float3 right = (float3)(1.0f - (yy + zz), xy + wz, xz - wy) * scale.x;
+    float3 up    = (float3)(xy - wz, 1.0f - (xx + zz), yz + wx) * scale.y;
+    float3 fwd   = (float3)(xz + wy, yz - wx, 1.0f - (xx + yy)) * scale.z;
+
+    instances[index].positionScale = (float4)(pos, max(max(scale.x, scale.y), scale.z)); // Fallback to max uniform scale
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(1.0f, 1.0f, 1.0f, 0.0f);
+    instances[index].primitiveId = primitive;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = treeIndex;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    
+    const uint activeInstanceCount = min(recipe->instanceBudget, 100000u); // Safely clamped
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_procedural_woodland(index, params, frame, recipe, output->instances);
+}
+#endif

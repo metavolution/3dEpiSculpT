@@ -1,0 +1,53 @@
+#ifndef EPI_SCULPTURE_ATMOSPHERE_CLH
+#define EPI_SCULPTURE_ATMOSPHERE_CLH
+
+#include "EpiMath.clh"
+
+// -----------------------------------------------------------------------------
+// Educational Annotation: OpenCL Atmospheric Radiative Transfer Functions
+// -----------------------------------------------------------------------------
+// Computes physical Henyey-Greenstein anisotropic phase scattering, Rayleigh
+// molecular scattering, and multi-spectral wavelength extinction for 3D/4D
+// participating media in GPU SDF chamber raymarching.
+// -----------------------------------------------------------------------------
+
+#define EPI_ATMOSPHERE_INV_4PI 0.07957747154594767f
+#define EPI_ATMOSPHERE_RAYLEIGH_FACTOR 0.05968310365946075f
+
+// Henyey-Greenstein phase function \\Phi_HG(\\theta, g)
+inline float epi_henyey_greenstein_phase(float cos_theta, float g) {
+    float g2 = g * g;
+    float denom = 1.0f + g2 - 2.0f * g * cos_theta;
+    denom = fmax(denom, 1.0e-4f);
+    return EPI_ATMOSPHERE_INV_4PI * (1.0f - g2) / (denom * sqrt(denom));
+}
+
+// Rayleigh phase function \\Phi_Rayleigh(\\theta)
+inline float epi_rayleigh_phase(float cos_theta) {
+    return EPI_ATMOSPHERE_RAYLEIGH_FACTOR * (1.0f + cos_theta * cos_theta);
+}
+
+// Dual phase function blending Rayleigh molecular and Mie aerosol
+inline float epi_dual_phase(float cos_theta, float g, float mie_blend) {
+    float u = clamp(mie_blend, 0.0f, 1.0f);
+    float rayleigh = epi_rayleigh_phase(cos_theta);
+    float mie = epi_henyey_greenstein_phase(cos_theta, g);
+    return (1.0f - u) * rayleigh + u * mie;
+}
+
+// Height-stratified exponential fog density at point p
+inline float epi_height_fog_density(float3 p, float base_density, float height_scale) {
+    float hs = fmax(height_scale, 0.1f);
+    return base_density * exp(-p.y / hs);
+}
+
+// Spectral extinction transmittance for step \\Delta s
+inline float3 epi_spectral_transmittance(float3 sigma_t, float step_dist) {
+    return (float3)(
+        exp(-sigma_t.x * step_dist),
+        exp(-sigma_t.y * step_dist),
+        exp(-sigma_t.z * step_dist)
+    );
+}
+
+#endif // EPI_SCULPTURE_ATMOSPHERE_CLH

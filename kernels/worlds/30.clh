@@ -1,0 +1,173 @@
+// -----------------------------------------------------------------------------
+// Component: SU(2) Yang-Mills BPST Instanton & Skyrmion Soliton Lattice (Generator ID: 30)
+// -----------------------------------------------------------------------------
+// THEORETICAL FOUNDATION: NON-ABELIAN GAUGE THEORY & TOPOLOGICAL CHARGE
+//
+// In 1975, Belavin, Polyakov, Schwartz, and Tyupkin (BPST) discovered the
+// instanton solution to the Euclidean SU(2) Yang-Mills field equations in R^4.
+// Instantons represent quantum tunneling transitions between topologically
+// distinct vacua classified by the third homotopy group pi_3(SU(2)) = Z:
+//
+// 1. Gauge Field Connection A_mu^a:
+//    A_mu^a(x) = (2 / g) * (eta_{a,mu,nu} * x_nu) / (x^2 + rho^2)
+//    where eta_{a,mu,nu} is the 't Hooft symbol coupling SU(2) to SO(4).
+//
+// 2. Self-Dual Field Strength F_mu_nu = *F_mu_nu:
+//    Topological Pontryagin action density:
+//    s(x) = 96 * rho^4 / (x^2 + rho^2)^4
+//
+// 3. Skyrmion Soliton Topology:
+//    Topological baryon winding number Q = (1 / 32*pi^2) * int Tr(F /\ F) = 1.
+//    Knotted vortex tubes wrap S^3 with toroidal knot winding (p=3, q=2).
+//
+// 4. SO(4) Dual-Isoclinic Rotor Precession & Conformal Projection to R^3.
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_su2_yang_mills_instanton(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 2048u);
+    const float time = frame->time * 0.45f;
+    const float normIdx = convert_float(index) / convert_float(max(1u, activeInstanceCount));
+
+    // Distribution: 32 Skyrmion soliton vortex rings, each having 64 gauge nodes
+    const uint rings = 32u;
+    const uint nodesPerRing = 64u;
+    const uint ringId = index / nodesPerRing;
+    const uint nodeId = index % nodesPerRing;
+
+    const float tau = 6.28318530718f;
+    const float ringFrac = convert_float(ringId) / convert_float(rings);
+    const float nodeFrac = convert_float(nodeId) / convert_float(nodesPerRing);
+
+    // Hyper-spherical angles on S^3 subset R^4
+    // Winding numbers (p=3, q=2) for knotted Skyrmion baryon configuration
+    const float chi = (ringFrac * 0.85f + 0.08f) * 3.14159265359f; // Polar angle in S^3
+    const float theta = nodeFrac * tau * 3.0f + time * 0.3f;
+    const float phi = nodeFrac * tau * 2.0f + ringFrac * tau + time * 0.2f * params->dynamics_seed.x;
+
+    const float sinChi = sin(chi);
+    const float cosChi = cos(chi);
+    const float sinTheta = sin(theta);
+    const float cosTheta = cos(theta);
+    const float sinPhi = sin(phi);
+    const float cosPhi = cos(phi);
+
+    // Coordinate on unit 3-sphere S^3
+    float4 ptS3 = (float4)(
+        sinChi * sinTheta * cosPhi,
+        sinChi * sinTheta * sinPhi,
+        sinChi * cosTheta,
+        cosChi
+    );
+
+    // Non-Abelian BPST gauge curvature modulation:
+    // radial profile rho_instanton modulated by latent coordinate
+    const float rhoInstanton = 1.15f + 0.35f * sin(time * 0.8f + params->latent_w);
+    const float rSq = ptS3.x * ptS3.x + ptS3.y * ptS3.y + ptS3.z * ptS3.z + ptS3.w * ptS3.w;
+    const float pontryaginDensity = 96.0f * (rhoInstanton * rhoInstanton * rhoInstanton * rhoInstanton)
+        / pow(rSq + rhoInstanton * rhoInstanton, 4.0f);
+
+    // SO(4) Left-Right dual isoclinic rotation (precession of the non-Abelian instanton)
+    const float thetaL = params->rotor_alpha + time * 0.22f;
+    const float thetaR = params->rotor_beta + time * 0.16f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    float4 rot_p4 = epi_rotate_so4(ptS3, thetaL, thetaR, phiL, phiR);
+
+    // Analytical 4D tangent vector along Skyrme flow
+    float4 tan4D = (float4)(
+        cosChi * sinTheta * cosPhi - sinChi * cosTheta * sinPhi * 2.0f,
+        cosChi * sinTheta * sinPhi + sinChi * cosTheta * cosPhi * 2.0f,
+        -sinChi * sinTheta * 3.0f,
+        -sinChi
+    );
+    float4 rot_tan4 = epi_rotate_so4(tan4D, thetaL, thetaR, phiL, phiR);
+
+    // Conformal stereographic projection pi: S^3 -> R^3
+    const float kappa = 0.64f * clamp(params->topologyBlend, 0.20f, 0.95f);
+    const float denom = fmax(1.0f - kappa * rot_p4.w, 0.14f);
+    const float invDenom = 1.0f / denom;
+
+    const float worldScale = 4.8f * params->output_scale.x;
+    float3 p = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    // Differential 3D tangent
+    float3 tangent3 = ((float3)(rot_tan4.x, rot_tan4.y, rot_tan4.z) * denom
+                      + (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * (kappa * rot_tan4.w))
+                      * (invDenom * invDenom);
+    const float tLen = length(tangent3);
+    tangent3 = (tLen > 1e-4f) ? (tangent3 / tLen) : (float3)(0.0f, 1.0f, 0.0f);
+
+    const float4 orientation = epi_world_align_y(tangent3);
+
+    // Breathing pulse modulated by instanton quantum tunneling action
+    const float pulse = 0.5f + 0.5f * sin(time * 2.8f + nodeFrac * tau * 4.0f);
+    float baseScale = params->output_scale.y * 0.082f * (0.80f + 0.30f * pulse);
+
+    // Material Band & Chromatic Hue Mapping:
+    // Band 0: Deep non-Abelian instanton core (violet/indigo)
+    // Band 1: Self-dual field curvature flux tube (electric emerald)
+    // Band 2: Skyrmion topological charge singularity (blazing solar gold)
+    uint materialBand = 1u;
+    float3 tint = (float3)(0.12f, 0.95f, 0.55f);
+    float emission = 0.35f + 0.35f * pulse;
+
+    if (pontryaginDensity > 0.65f) {
+        materialBand = 2u;
+        tint = (float3)(0.98f, 0.82f, 0.15f);
+        emission = 1.4f + 0.8f * pulse;
+        baseScale *= 1.25f;
+    } else if (ringId % 3u == 0u) {
+        materialBand = 0u;
+        tint = (float3)(0.28f, 0.15f, 0.88f);
+        emission = 0.20f;
+    }
+
+    // Audio Resonance Excitation (Color charge fluctuation)
+    const float excitation = params->audio_spectrum.x * 2.2f + params->audio_spectrum.z * 1.5f;
+    emission += excitation * 1.8f;
+    baseScale *= (1.0f + excitation * 0.35f);
+
+    instances[index].positionScale = (float4)(p, max(baseScale, 0.006f));
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 2048u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_su2_yang_mills_instanton(index, params, frame, recipe, output->instances);
+}
+#endif

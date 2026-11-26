@@ -1,0 +1,12 @@
+{
+    "version": 3,
+    "preset": "Exponential Fractal Vision",
+    "presentation": "world",
+    "inner": "kali_set_orbit",
+    "reduction": "ammann_beenker",
+    "seedType": "kuramoto_synchronization",
+    "colorEffect": "livingpaletteagent",
+    "worldScale": 2.0,
+    "feedbackIterations": 8,
+    "patternSpeed": 0.08
+}

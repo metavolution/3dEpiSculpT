@@ -1,0 +1,91 @@
+// -----------------------------------------------------------------------------
+// Component: Kuramoto Q-Bit Synchronization Lattice (Generator ID: 1)
+// -----------------------------------------------------------------------------
+
+#define EPI_KURAMOTO_ROLE_FORM 0u
+#define EPI_KURAMOTO_ROLE_STRUCTURE 1u
+#define EPI_KURAMOTO_ROLE_ACCENT 2u
+
+inline uint epi_kuramoto_material_role(const uint semanticRole,
+                                       const __constant WorldRecipeGpu* recipe) {
+    return min(semanticRole, recipe->materialBandCount - 1u);
+}
+
+inline void epi_world_write_kuramoto(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances)
+{
+    // 7x3 lattice = 21 instances
+    uint col = index % 7u;
+    uint row = index / 7u;
+
+    float x = (float)col * 2.0f - 6.0f;
+    float y = (float)row * 2.0f - 2.0f;
+    float z = 0.0f;
+
+    // Kuramoto phase synchronization simulation
+    float K = params->dynamics_seed.x; 
+    float omega = 1.0f + (float)index * 0.05f; 
+    float time = frame->time;
+    
+    // Mean phase pulling
+    float meanPhase = time * 1.5f;
+    float rawPhase = omega * time;
+    float phase = mix(rawPhase, meanPhase, clamp(K * 2.0f, 0.0f, 1.0f));
+
+    float hue = phase * (1.0f / (2.0f * M_PI_F));
+    float3 rgb = epi_world_phase_colour(hue, 1.0f);
+    
+    // Per-instance material role driven by local phase
+    float metallic = 0.7f + 0.3f * sin(phase * 2.0f);
+    float roughness = 0.1f + 0.2f * cos(phase);
+    float emissive = max(sin(phase), 0.0f);
+    float scalePulse = 1.0f + 0.2f * sin(phase);
+
+    WorldInstanceGpu inst;
+    inst.positionScale = (float4)(x, y, z, scalePulse);
+    inst.axisScale = (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    
+    // Rotor orientation
+    float angle = phase * 0.5f;
+    inst.orientation = (float4)(0.0f, sin(angle), 0.0f, cos(angle)); // Y-axis rotation
+    
+    inst.tintEmission = (float4)(rgb, emissive);
+    inst.pbrOverride = (float4)(metallic, roughness, 0.0f, emissive);
+    
+    inst.primitiveId = recipe->primitiveId;
+    // Semantic material role:
+    // - Accent: cells with strong phase excitation or high emission crests
+    // - Structure: perimeter cells holding the 7x3 coupling boundary
+    // - Form: inner synchronized oscillator cluster
+    uint semanticRole = EPI_KURAMOTO_ROLE_FORM;
+    const bool isBoundary = (col == 0u || col == 6u || row == 0u || row == 2u);
+    if (emissive > 0.75f) {
+        semanticRole = EPI_KURAMOTO_ROLE_ACCENT;
+    } else if (isBoundary) {
+        semanticRole = EPI_KURAMOTO_ROLE_STRUCTURE;
+    }
+    inst.materialBand = epi_kuramoto_material_role(semanticRole, recipe);
+    inst.flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    inst.sourceIndex = index;
+
+    instances[index] = inst;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+    if (index >= 21u) return;
+
+    epi_world_write_kuramoto(index, params, frame, recipe, output->instances);
+}
+#endif

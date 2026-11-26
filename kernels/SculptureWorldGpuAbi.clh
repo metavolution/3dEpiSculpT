@@ -1,0 +1,70 @@
+// OpenCL mirror of SculptureWorldGpuAbi.h. Keep this file structurally
+// synchronized with the host ABI; no C++ enum or bool crosses this boundary.
+
+#ifndef EPI_SCULPT_WORLD_GPU_ABI_CLH
+#define EPI_SCULPT_WORLD_GPU_ABI_CLH
+
+#define EPI_SCULPT_WORLD_ABI_VERSION 3u
+#define EPI_SCULPT_WORLD_RECIPE_BYTES 32u
+#define EPI_SCULPT_WORLD_FRAME_BYTES 32u
+#define EPI_SCULPT_WORLD_INSTANCE_BYTES 96u
+#define EPI_SCULPT_WORLD_MAX_INSTANCE_COUNT 16384u
+#define EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG 0x80000000u
+#define EPI_SCULPT_WORLD_USES_4D_PROJECTION_FLAG 0x00000001u
+#define EPI_SCULPT_WORLD_MIRROR_TOPOLOGY_SHIFT 1u
+#define EPI_SCULPT_WORLD_MIRROR_TOPOLOGY_MASK 0x00000006u
+#define EPI_SCULPT_WORLD_RECIPE_FLAGS_MASK 0x00000007u
+
+typedef struct __attribute__((aligned(16))) WorldRecipeGpu {
+    uint abiVersion;
+    uint byteSize;
+    uint generatorId;
+    uint primitiveId;
+    uint instanceBudget;
+    uint generatorHz;
+    uint materialBandCount;
+    uint flags;
+} WorldRecipeGpu;
+
+typedef struct __attribute__((aligned(16))) WorldFrameGpu {
+    uint abiVersion;
+    uint byteSize;
+    uint generation;
+    uint activeInstanceCount;
+    float time;
+    float deltaSeconds;
+    float morph;
+    float reserved;
+} WorldFrameGpu;
+
+typedef struct __attribute__((aligned(16))) WorldInstanceGpu {
+    float4 positionScale;
+    float4 axisScale;
+    float4 orientation;
+    float4 tintEmission;
+    float4 pbrOverride;
+    uint primitiveId;
+    uint materialBand;
+    uint flags;
+    uint sourceIndex;
+} WorldInstanceGpu;
+
+typedef struct __attribute__((aligned(16))) WorldSnapshotGpu {
+    WorldFrameGpu frame;
+    WorldRecipeGpu recipe;
+    WorldInstanceGpu instances[EPI_SCULPT_WORLD_MAX_INSTANCE_COUNT];
+} WorldSnapshotGpu;
+
+inline int epi_sculpt_world_recipe_abi_valid(
+    const __constant WorldRecipeGpu* recipe) {
+    return recipe->abiVersion == EPI_SCULPT_WORLD_ABI_VERSION
+        && recipe->byteSize == EPI_SCULPT_WORLD_RECIPE_BYTES
+        && recipe->generatorId <= 31u
+        && recipe->primitiveId <= 7u
+        && recipe->instanceBudget <= EPI_SCULPT_WORLD_MAX_INSTANCE_COUNT
+        && recipe->generatorHz >= 1u && recipe->generatorHz <= 240u
+        && recipe->materialBandCount >= 1u && recipe->materialBandCount <= 16u
+        && (recipe->flags & ~EPI_SCULPT_WORLD_RECIPE_FLAGS_MASK) == 0u;
+}
+
+#endif

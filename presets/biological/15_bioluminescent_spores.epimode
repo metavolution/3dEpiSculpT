@@ -1,0 +1,35 @@
+{
+    "meta": {
+        "id": "authored/bioluminescent_spores",
+        "title": "Bioluminescent Spore Swarm",
+        "author": "Antigravity",
+        "description": "Deep ocean blues, cyan bursts, intense bioluminescence."
+    },
+    "world": {
+        "generatorId": 12,
+        "primitiveId": 0,
+        "instanceBudget": 10000,
+        "generatorHz": 60,
+        "materialBandCount": 3,
+        "uses4DProjection": true
+    },
+    "post": {
+        "bloom": {
+            "intensity": 0.2,
+            "threshold": 0.5,
+            "softKnee": 0.8
+        },
+        "colorGrading": {
+            "exposure": 1.2,
+            "contrast": 1.0,
+            "saturation": 1.3
+        },
+        "fog": {
+            "enabled": true,
+            "density": 0.02,
+            "heightFalloff": 0.1,
+            "scattering": [0.0, 0.4, 0.8],
+            "absorption": [0.0, 0.1, 0.3]
+        }
+    }
+}

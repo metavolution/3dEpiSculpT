@@ -1,0 +1,16 @@
+# epiC Recursive Counter-Winding Hopf Torus Recipe (.epihopf)
+# title: Villarceau Cathedral (m=4, D=2, Strict Local 4-Fiber Clearance)
+version = 1
+fibers_per_family = 4
+logical_depth = 2
+placement_mode = strict-local-clearance
+plus_initial_radians = 0
+plus_radians_per_second = 0.16
+minus_initial_radians = 0
+minus_radians_per_second = -0.16
+child_scale = 0.85
+child_twist_radians = 0.39269908169872414
+child_normal_offset = 0
+fiber_radius = 0.024
+conformal_scale_exponent = 0
+weave_amplitude = 0

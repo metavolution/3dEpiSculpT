@@ -1,0 +1,481 @@
+// -----------------------------------------------------------------------------
+// Educational Annotation: 3D Epimorphic Signed Distance Fields (SDF) in OpenCL
+// -----------------------------------------------------------------------------
+// A Signed Distance Field defines a surface implicitly as the zero-level set of
+// a scalar function d(p) = SDF(p), where:
+//   d(p) < 0  => inside the geometry
+//   d(p) == 0 => on the surface boundary
+//   d(p) > 0  => outside in empty space
+//
+// In epimorphic raymarching, 3D coordinates are folded through non-linear
+// complex maps across XY, YZ, ZX planes before evaluating primitive distance
+// bounds. This turns simple geometric primitives into infinite fractal arches,
+// recursive manifolds, and enclosed self-referential chambers.
+// -----------------------------------------------------------------------------
+#ifndef EPI_SDF_CLH
+#define EPI_SDF_CLH
+
+#define EPI_INNER_KNOT_TREFOIL 0
+#define EPI_INNER_KNOT_TUBULAR 1
+#define EPI_INNER_FRACTAL_MANDELBULB 2
+
+
+#include "SculptureGpuAbi.clh"
+#include "EpiMath.clh"
+#include "EpiTopology.clh"
+
+// ─── Basic Analytic SDF Primitives ──────────────────────────────────────────
+
+inline float epi_sdf_sphere(float3 p, float r) {
+    return length(p) - r;
+}
+
+inline float epi_sdf_box(float3 p, float3 b) {
+    float3 d = fabs(p) - b;
+    return length(fmax(d, (float3)(0.0f))) + fmin(fmax(d.x, fmax(d.y, d.z)), 0.0f);
+}
+
+inline float epi_sdf_torus(float3 p, float majorR, float minorR) {
+    float2 q = (float2)(length(p.xz) - majorR, p.y);
+    return length(q) - minorR;
+}
+
+inline float epi_sdf_cylinder(float3 p, float r, float h) {
+    float2 d = (float2)(length(p.xz) - r, fabs(p.y) - h);
+    return length(fmax(d, (float2)(0.0f))) + fmin(fmax(d.x, d.y), 0.0f);
+}
+
+// ─── Smooth Constructive Solid Geometry (CSG) ───────────────────────────────
+
+inline float epi_sdf_union_smooth(float d1, float d2, float k) {
+    float h = clamp(0.5f + 0.5f * (d2 - d1) / k, 0.0f, 1.0f);
+    return mix(d2, d1, h) - k * h * (1.0f - h);
+}
+
+inline float epi_sdf_subtract_smooth(float d1, float d2, float k) {
+    float h = clamp(0.5f - 0.5f * (d2 + d1) / k, 0.0f, 1.0f);
+    return mix(d1, -d2, h) + k * h * (1.0f - h);
+}
+
+inline float epi_sdf_intersect_smooth(float d1, float d2, float k) {
+    float h = clamp(0.5f - 0.5f * (d2 - d1) / k, 0.0f, 1.0f);
+    return mix(d2, d1, h) + k * h * (1.0f - h);
+}
+
+// ─── Educational Annotation: 3D PROCEDURAL PAREIDOLIA CATHEDRAL ─────────────
+// Generates architectural Pareidolia (cathedral-like organic structures)
+// using recursive 3D Box folding and spherical inversion (Mandelbox variant).
+
+
+// ─── The Classic Power-8 Mandelbulb ──────────────────────────────────────────
+inline float epi_sdf_mandelbulb(float3 p, float time, float* out_orbit_energy) {
+    float3 z = p;
+    float dr = 1.0f;
+    float r = 0.0f;
+    
+    // Dynamic breathing power
+    float power = 8.0f + 2.0f * sin(time * 0.5f);
+    
+    for (int i = 0; i < 10; i++) {
+        r = length(z);
+        if (r > 2.0f) break;
+        
+        // Convert to polar coordinates
+        float theta = acos(z.z / r);
+        float phi = atan2(z.y, z.x);
+        
+        // Scale and calculate derivative
+        dr = pow(r, power - 1.0f) * power * dr + 1.0f;
+        
+        // Scale and rotate the point
+        float zr = pow(r, power);
+        theta = theta * power;
+        phi = phi * power;
+        
+        // Convert back to cartesian coordinates
+        z = zr * (float3)(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + p;
+    }
+    
+    if (out_orbit_energy) *out_orbit_energy = r * 0.1f;
+    return 0.5f * log(r) * r / dr;
+}
+
+inline float epi_sdf_pareidolia_cathedral(
+
+    float3 p,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    float* out_orbit_energy
+) {
+    float3 z = p;
+    float scale = 1.0f;
+    
+    // Drive box scale and fold from active params
+    float boxScale = 2.0f + 0.5f * sin(frame->time * 0.2f);
+    float sphereRadius = 0.5f + 0.1f * params->dynamics_seed.z;
+    float magicFold = params->output_scale.x;
+
+    float3 offset = z * magicFold;
+    
+    for(int i = 0; i < 6; ++i) {
+        // Box fold
+        z = clamp(z, (float3)(-1.0f), (float3)(1.0f)) * 2.0f - z;
+        
+        // Sphere inversion
+        float r2 = dot(z, z);
+        float factor = r2 < sphereRadius ? (1.0f / sphereRadius) : (r2 < 1.0f ? (1.0f / r2) : 1.0f);
+        
+        z = z * factor * boxScale + offset;
+        scale = scale * factor * boxScale + 1.0f;
+    }
+    
+    *out_orbit_energy = length(z) * 0.05f;
+    return (length(z) - 0.25f) / fabs(scale);
+}
+
+// Raymarcher specific: Complex chamber bounding box
+float epi_sdf_chamber(float3 p, __constant const SculptureProgramParamsGpu* params, __constant const SculptureFrameGpu* frame, float* out_orbit) {
+    float orbit_energy = 0.0f;
+    
+    const float world_scale = fmax(params->output_scale.y, 0.1f);
+    float3 scaled_p = p / world_scale;
+    
+    float core_dist = epi_sdf_pareidolia_cathedral(scaled_p, params, frame, &orbit_energy);
+    
+    // Chamber walls
+    float chamber = epi_sdf_box(p, (float3)(8.0f, 6.0f, 10.0f));
+    chamber = max(chamber, -epi_sdf_box(p, (float3)(7.5f, 5.5f, 9.5f))); // hollow
+    
+    // Pillars
+    float3 pillar_p = p;
+    pillar_p.x = epi_positive_fmod(pillar_p.x + 2.0f, 4.0f) - 2.0f;
+    pillar_p.z = epi_positive_fmod(pillar_p.z + 2.0f, 4.0f) - 2.0f;
+    float pillars = epi_sdf_box(pillar_p, (float3)(0.2f, 6.0f, 0.2f));
+    chamber = min(chamber, max(pillars, epi_sdf_box(p, (float3)(7.5f, 5.5f, 9.5f))));
+    
+    // Scene boolean
+    float final_dist = min(core_dist * world_scale, chamber);
+    
+    if (out_orbit) *out_orbit = orbit_energy;
+    return final_dist;
+}
+// ─── 4D Hyper-Dimensional Manifold SDFs & SO(4) Isoclinic Rotors ──────────────
+
+inline float epi_sdf_manifold_4d(float4 p, uint type, float time) {
+    switch (type % 16u) {
+    case 0u: { // Clifford Torus (S1 x S1) in S3
+        const float r1 = length(p.xy);
+        const float r2 = length(p.zw);
+        const float d1 = r1 - 0.70710678f;
+        const float d2 = r2 - 0.70710678f;
+        const float tube = 0.12f + 0.04f * sin(time * 2.0f);
+        return sqrt(d1 * d1 + d2 * d2) - tube;
+    }
+    case 1u: { // Tesseract (8-Cell Hypercube)
+        const float4 a = fabs(p);
+        return fmax(fmax(a.x, a.y), fmax(a.z, a.w)) - 0.75f;
+    }
+    case 2u: { // 16-Cell (Cross-Polytope Orthoplex)
+        const float4 a = fabs(p);
+        return (a.x + a.y + a.z + a.w) * 0.5f - 0.65f;
+    }
+    case 3u: { // 24-Cell (Icositetrachoron)
+        const float4 a = fabs(p);
+        const float maxC = fmax(fmax(a.x, a.y), fmax(a.z, a.w));
+        const float sumC = (a.x + a.y + a.z + a.w) * 0.5f;
+        return fmax(maxC, sumC) - 0.70f;
+    }
+    case 4u: { // Calabi-Yau K3 Surface: z1^4 + z2^4 = 1 in C^2
+        const float x2 = p.x * p.x - p.y * p.y;
+        const float y2 = 2.0f * p.x * p.y;
+        const float z1_4_re = x2 * x2 - y2 * y2;
+        const float z1_4_im = 2.0f * x2 * y2;
+
+        const float z2 = p.z * p.z - p.w * p.w;
+        const float w2 = 2.0f * p.z * p.w;
+        const float z2_4_re = z2 * z2 - w2 * w2;
+        const float z2_4_im = 2.0f * z2 * w2;
+
+        const float re = z1_4_re + z2_4_re - 1.0f;
+        const float im = z1_4_im + z2_4_im;
+        return (sqrt(re * re + im * im) - 0.2f) * 0.4f;
+    }
+    case 5u: { // Hopf Fibration S3 -> S2
+        return fabs(length(p) - 1.0f) - 0.08f;
+    }
+    case 6u: { // 600-Cell (Hexacosichoron: 120 vertices on S3, H4 symmetry)
+        float4 a = fabs(p);
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        if (a.z > a.y) { float t = a.y; a.y = a.z; a.z = t; }
+        if (a.w > a.z) { float t = a.z; a.z = a.w; a.w = t; }
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        if (a.z > a.y) { float t = a.y; a.y = a.z; a.z = t; }
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        const float phi = 1.6180339887f;
+        const float inv_phi = 0.6180339887f;
+        const float d1 = a.x - 1.0f;
+        const float d2 = (a.x + a.y + a.z + a.w) * 0.5f - 1.0f;
+        const float d3 = (phi * a.x + a.y + inv_phi * a.z) * 0.5f - 1.0f;
+        const float polyDist = fmax(fmax(d1, d2), d3);
+        const float shellDist = fabs(length(p) - 1.0f) - 0.05f;
+        return mix(polyDist, shellDist, 0.35f);
+    }
+    case 7u: { // 8D Octonionic Associator S7 -> S4
+        float4 q1_lo = (float4)(p.x, p.y, p.z, p.w);
+        float4 q1_hi = (float4)(0.0f);
+        float4 q2_lo = (float4)(0.0f);
+        float4 q2_hi = (float4)(p.w, p.z, p.y, p.x);
+        float4 q3_lo = (float4)(sin(time), 0.0f, cos(time), 0.0f);
+        float4 q3_hi = (float4)(0.0f, sin(time * 0.5f), 0.0f, cos(time * 0.5f));
+        float4 a_lo, a_hi;
+        epi_oct_associator(q1_lo, q1_hi, q2_lo, q2_hi, q3_lo, q3_hi, &a_lo, &a_hi);
+        float assocNorm = sqrt(dot(a_lo, a_lo) + dot(a_hi, a_hi));
+        return fabs(assocNorm - 0.35f) - 0.06f;
+    }
+    case 8u: { // 120-Cell (Hecatonicosachoron: 600 vertices, 120 dodecahedral cells)
+        float4 a = fabs(p);
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        if (a.z > a.y) { float t = a.y; a.y = a.z; a.z = t; }
+        if (a.w > a.z) { float t = a.z; a.z = a.w; a.w = t; }
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        if (a.z > a.y) { float t = a.y; a.y = a.z; a.z = t; }
+        if (a.y > a.x) { float t = a.x; a.x = a.y; a.y = t; }
+        const float phi = 1.6180339887f;
+        const float inv_phi = 0.6180339887f;
+        const float f1 = a.x;
+        const float f2 = (a.x + a.y + a.z + a.w) * 0.5f;
+        const float f3 = (phi * a.x + a.y + inv_phi * a.z) * 0.5f;
+        const float inradius = 0.9510565f;
+        const float polyDist = fmax(fmax(f1, f2), f3) - inradius;
+        const float shellDist = fabs(length(p) - 1.0f) - 0.045f;
+        return mix(polyDist, shellDist, 0.40f);
+    }
+    case 9u: { // Seifert Hyperbolic Soliton (T2 x S1)
+        const float r1 = length(p.xy);
+        const float r2 = length(p.zw);
+        const float th1 = atan2(p.y, p.x);
+        const float th2 = atan2(p.w, p.z);
+        const float phase = sin(3.0f * th1 + 2.0f * th2 + time * 1.5f);
+        const float d1 = r1 - 0.7071f;
+        const float d2 = r2 - 0.7071f;
+        const float torusDist = sqrt(d1 * d1 + d2 * d2);
+        return torusDist - (0.10f + 0.04f * phase);
+    }
+    case 10u: { // Calabi-Yau Quintic Threefold: z1^5 + z2^5 = 1 in C^2
+        const float r1 = length(p.xy);
+        const float th1 = atan2(p.y, p.x);
+        const float r1_5 = pow(clamp(r1, 0.0f, 2.5f), 5.0f);
+        const float z1_5_re = r1_5 * cos(5.0f * th1);
+        const float z1_5_im = r1_5 * sin(5.0f * th1);
+
+        const float r2 = length(p.zw);
+        const float th2 = atan2(p.w, p.z);
+        const float r2_5 = pow(clamp(r2, 0.0f, 2.5f), 5.0f);
+        const float z2_5_re = r2_5 * cos(5.0f * th2);
+        const float z2_5_im = r2_5 * sin(5.0f * th2);
+
+        const float psi = 0.25f * sin(time * 0.5f);
+        const float re = z1_5_re + z2_5_re - 1.0f - psi * (p.x * p.z - p.y * p.w);
+        const float im = z1_5_im + z2_5_im - psi * (p.x * p.w + p.y * p.z);
+        return (sqrt(re * re + im * im) - 0.15f) * 0.25f;
+    }
+    case 11u: { // Lie E8 Coxeter Projection Lattice
+        const float r = length(p);
+        const float phi = 1.6180339887f;
+        const float dShell1 = fabs(r - 1.0f);
+        const float dShell2 = fabs(r - phi * 0.6180339887f);
+        const float cosHarmonics = cos(5.0f * atan2(p.y, p.x)) * cos(3.0f * atan2(p.w, p.z));
+        return fmin(dShell1, dShell2) - 0.05f * (1.0f + 0.5f * cosHarmonics);
+    }
+    case 12u: { // 4D Dynamic Quaternion Julia Fractal
+        float4 z = p;
+        // Dynamic fractal seed morphing smoothly over time
+        float4 c = (float4)(
+            0.35f + 0.15f * cos(time * 0.3f),
+            0.45f * sin(time * 0.4f),
+            0.20f * cos(time * 0.5f),
+            0.15f * sin(time * 0.6f)
+        );
+        float r2 = dot(z, z);
+        float dr = 1.0f;
+        for (int i = 0; i < 9; ++i) {
+            if (r2 > 8.0f) break;
+            
+            // 4D Quaternion multiplication z^2 (real part is x)
+            float4 z2 = (float4)(
+                z.x*z.x - z.y*z.y - z.z*z.z - z.w*z.w,
+                2.0f * z.x * z.y,
+                2.0f * z.x * z.z,
+                2.0f * z.x * z.w
+            );
+            
+            dr = 2.0f * sqrt(r2) * dr + 1.0f;
+            z = z2 + c;
+            r2 = dot(z, z);
+        }
+        // Distance bound for Julia set: 0.5 * ln(r) * r / dr
+        return 0.25f * log(r2) * sqrt(r2) / dr;
+    }
+    case 13u: { // 4D Mandelbulb (Power 8)
+        float4 z = p;
+        float dr = 1.0f;
+        float r = 0.0f;
+        // The 4D Mandelbulb morphs into a spectacular organic structure
+        float morph_angle = time * 0.25f;
+        
+        for (int i = 0; i < 6; ++i) {
+            r = length(z);
+            if (r > 3.0f) break;
+            
+            // Convert to 4D hyperspherical coordinates
+            float theta = acos(z.w / (r + 1e-6f));
+            float r3 = length(z.xyz);
+            float phi = acos(z.z / (r3 + 1e-6f));
+            float psi = atan2(z.y, z.x);
+            
+            // Derivative update
+            dr = pow(r, 7.0f) * 8.0f * dr + 1.0f;
+            
+            // Scale and rotate by power 8
+            float r8 = pow(r, 8.0f);
+            float n = 8.0f + 2.0f * sin(morph_angle); // Dynamically morphing power
+            theta *= n;
+            phi *= n;
+            psi *= n;
+            
+            // Convert back to 4D cartesian
+            float sin_theta = sin(theta);
+            float sin_phi = sin(phi);
+            z = r8 * (float4)(
+                sin_theta * sin_phi * cos(psi),
+                sin_theta * sin_phi * sin(psi),
+                sin_theta * cos(phi),
+                cos(theta)
+            );
+            z += p; // Add original position (Mandelbrot style)
+        }
+        return 0.5f * log(r) * r / dr;
+    }
+    case 14u: { // 4D Hyperbolic {3,5,3} Honeycomb Horosphere
+        const float r = length(p);
+        const float harmonics = 0.08f * (cos(3.0f * atan2(p.y, p.x)) + cos(5.0f * atan2(p.w, p.z)));
+        return fabs(r - 1.0f) - harmonics - 0.04f;
+    }
+    case 15u: { // Clifford-Hopf Multi-Soliton Lattice (S3 -> S2)
+        const float r1 = length(p.xy);
+        const float r2 = length(p.zw);
+        const float s3Dist = fabs(sqrt(r1 * r1 + r2 * r2) - 1.0f);
+        const float torusDist = fabs(r1 - r2);
+        return s3Dist + 0.5f * torusDist - 0.03f;
+    }
+    default:
+        return length(p) - 1.0f;
+    }
+}
+
+inline float epi_sdf_epimorphic_chamber(
+    float3 p,
+    __constant const SculptureProgramParamsGpu* params,
+    float time,
+    float morph,
+    float* out_orbit_energy
+) {
+    *out_orbit_energy = 0.0f;
+    const float world_scale = fmax(params->output_scale.y, 0.1f);
+    float3 local_p = p / world_scale;
+
+    // Check if 4D Higher-Dimensional Foliation mode is active
+    if (params->enable4D > 0u) {
+        float amp = params->pulse_material.y;
+        float audio_bass = params->audio_spectrum.x * amp;
+        float audio_mid = params->audio_spectrum.y * amp;
+        float drift = params->dynamics_seed.x * time + audio_mid * 0.6f;
+        float w = params->latent_w + audio_bass * 1.2f;
+        
+        // SO(4) Dual-Isoclinic Left/Right rotor angles
+        float alpha = drift + w;
+        float beta = drift * 0.61803398875f - w * 0.5f;
+        float thetaL = alpha + beta;
+        float thetaR = alpha - beta;
+        
+        float4 p4 = (float4)(local_p.x, local_p.y, local_p.z, w);
+        p4 = epi_rotate_so4_dual(p4, thetaL, thetaR);
+        float manifold_sdf = epi_sdf_manifold_4d(p4, (uint)params->enable4D, time);
+        *out_orbit_energy = length(p4) * 0.25f;
+        return manifold_sdf * world_scale;
+    }
+
+    // Outer bounding chamber room with physical 0.3-thickness walls
+    float room_outer = epi_sdf_box(local_p, (float3)(3.5f, 3.5f, 3.5f));
+    float room_inner = epi_sdf_box(local_p, (float3)(3.2f, 3.2f, 3.2f));
+    float chamber_walls = max(room_outer, -room_inner); // Bounded physical pavilion
+
+    // Epimorphic 3-plane folded core
+    float3 folded = local_p;
+    float total_drift = 0.0f;
+    uint iterations = clamp(params->feedback_iterations, 1u, 6u);
+
+    for (uint i = 0u; i < iterations; ++i) {
+        float3 lifted = epi_lift_three_planes(folded, params, time, i);
+        float3 reduced = epi_reduce_domain(lifted, params->reduction_id, params->stageMask);
+        if (params->topologyBlend > 0.0f && params->reduction_id != params->reduction_idB) {
+            float3 reduced_b = epi_reduce_domain(lifted, params->reduction_idB, params->stageMask);
+            reduced = mix(reduced, reduced_b, params->topologyBlend);
+        }
+        total_drift += length(reduced - folded) / convert_float(iterations);
+        folded = mix(folded, reduced, 0.75f);
+    }
+    *out_orbit_energy = total_drift;
+
+    // Sculptural core: smooth combination of torus and folded pillars
+    float core_torus = epi_sdf_torus(folded, 1.1f, 0.28f * params->output_scale.x);
+    float core_sphere = epi_sdf_sphere(folded, 0.65f * params->output_scale.x);
+    float sculpture_core = epi_sdf_union_smooth(core_torus, core_sphere, 0.25f);
+
+    // Periodic architectural colonnade in chamber
+    float3 rep_p = (float3)(epi_positive_fmod(local_p.x + 1.5f, 3.0f) - 1.5f, local_p.y, epi_positive_fmod(local_p.z + 1.5f, 3.0f) - 1.5f);
+    float pillars = epi_sdf_cylinder(rep_p, 0.18f, 3.2f);
+
+    // Combine sculpture, pillars, and bounding chamber walls
+    float architecture = epi_sdf_union_smooth(sculpture_core, pillars, 0.30f);
+    float scene_sdf = epi_sdf_union_smooth(architecture, chamber_walls, 0.40f);
+
+    return scene_sdf * world_scale;
+}
+
+// Tetrahedral normal gradient evaluation
+inline float3 epi_sdf_normal_tetrahedral(__constant const SculptureFrameGpu* frame, 
+    float3 p,
+    __constant const SculptureProgramParamsGpu* params,
+    float time,
+    float morph,
+    float eps
+) {
+    float dummy;
+    const float2 k = (float2)(1.0f, -1.0f);
+    float3 p1 = p + (float3)(k.x, k.y, k.y) * eps;
+    float3 p2 = p + (float3)(k.y, k.y, k.x) * eps;
+    float3 p3 = p + (float3)(k.y, k.x, k.y) * eps;
+    float3 p4 = p + (float3)(k.x, k.x, k.x) * eps;
+
+    float d1, d2, d3, d4;
+    if (params->enable4D > 0u || params->reduction_id != 3u) {
+        d1 = epi_sdf_epimorphic_chamber(p1, params, time, morph, &dummy);
+        d2 = epi_sdf_epimorphic_chamber(p2, params, time, morph, &dummy);
+        d3 = epi_sdf_epimorphic_chamber(p3, params, time, morph, &dummy);
+        d4 = epi_sdf_epimorphic_chamber(p4, params, time, morph, &dummy);
+    } else {
+        d1 = epi_sdf_pareidolia_cathedral(p1, params, frame, &dummy);
+        d2 = epi_sdf_pareidolia_cathedral(p2, params, frame, &dummy);
+        d3 = epi_sdf_pareidolia_cathedral(p3, params, frame, &dummy);
+        d4 = epi_sdf_pareidolia_cathedral(p4, params, frame, &dummy);
+    }
+
+    float3 n = (float3)(k.x, k.y, k.y) * d1 +
+               (float3)(k.y, k.y, k.x) * d2 +
+               (float3)(k.y, k.x, k.y) * d3 +
+               (float3)(k.x, k.x, k.x) * d4;
+    return normalize(n);
+}
+
+#endif // EPI_SDF_CLH

@@ -1,0 +1,40 @@
+{
+  "formatVersion": 2,
+  "presetId": "authored/dimensional/160_lsystem_fractal_tree",
+  "title": "L-System Fractal Tree",
+  "worldRecipe": {
+    "generator": "LSystemFractal",
+    "primitive": "Cylinder",
+    "instanceBudget": 16383,
+    "generatorHz": 60,
+    "materialBandCount": 4,
+    "uses4DProjection": false
+  },
+  "sculptureParams": {
+    "innerMap": "Identity",
+    "reduction": "Clamp",
+    "stageMask": 7,
+    "recursionCount": 1,
+    "latentW": 0.0,
+    "temporalMorph": 0.0,
+    "worldScale": 1.0,
+    "radiusScale": 1.0,
+    "wcaWidth": 0.2,
+    "wcaPeak": 0.5,
+    "wcaAlpha": 0.3,
+    "morphMode": "PingPong",
+    "colorEffect": "none"
+  },
+  "visualParams": {
+    "roughness": 0.4,
+    "metallic": 0.2,
+    "emissionBoost": 1.5,
+    "ior": 1.5
+  },
+  "cameraSetup": {
+    "distance": 3.5,
+    "elevation": 0.2,
+    "azimuth": 0.5,
+    "fov": 60.0
+  }
+}

@@ -1,0 +1,191 @@
+// OpenCL mirror of SculptureGpuAbi.h. Keep literal IDs, field order, and byte
+// sizes synchronized. This file defines data only; kernel ownership arrives in
+// the application OpenCL backend rather than mGFX.
+
+#ifndef EPI_SCULPTURE_GPU_ABI_CLH
+#define EPI_SCULPTURE_GPU_ABI_CLH
+
+#define EPI_SCULPT_ABI_VERSION 1u
+
+#define EPI_SCULPT_VOLUME_GRID_SIZE 50u
+#define EPI_SCULPT_VOLUME_VOXEL_COUNT 125000u
+#define EPI_SCULPT_VOLUME_MACRO_SIZE 10u
+#define EPI_SCULPT_VOLUME_MACRO_BLOCK_COUNT 125u
+
+#define EPI_SCULPT_INNER_IDENTITY 0u
+#define EPI_SCULPT_INNER_SQUARE 1u
+#define EPI_SCULPT_INNER_CUBE 2u
+#define EPI_SCULPT_INNER_SIN 3u
+#define EPI_SCULPT_INNER_COS 4u
+#define EPI_SCULPT_INNER_SINH 5u
+#define EPI_SCULPT_INNER_COSH 6u
+#define EPI_SCULPT_INNER_TANH 7u
+#define EPI_SCULPT_INNER_EXP 8u
+#define EPI_SCULPT_INNER_INVERT 9u
+#define EPI_SCULPT_INNER_KALEIDOSCOPE 10u
+#define EPI_SCULPT_INNER_LOG 11u
+#define EPI_SCULPT_INNER_HENON 12u
+#define EPI_SCULPT_INNER_CLIFFORD 13u
+#define EPI_SCULPT_INNER_LISSAJOUS 14u
+#define EPI_SCULPT_INNER_MANDELBOX 15u
+#define EPI_SCULPT_INNER_GYROID 16u
+#define EPI_SCULPT_INNER_DROP 17u
+#define EPI_SCULPT_INNER_MOBIUS 18u
+#define EPI_SCULPT_INNER_QUATERNION_JULIA 19u
+#define EPI_SCULPT_INNER_QUATERNION_MANDELBROT 20u
+#define EPI_SCULPT_INNER_OCTONION_FEEDBACK 21u
+#define EPI_SCULPT_INNER_POINCARE_HYPERBOLIC 22u
+#define EPI_SCULPT_INNER_KLEIN_PROJECTIVE 23u
+#define EPI_SCULPT_INNER_CALABI_YAU_QUINTIC 24u
+#define EPI_SCULPT_INNER_OCTONION_CAYLEY 25u
+#define EPI_SCULPT_INNER_CLIFFORD_HOPF 26u
+#define EPI_SCULPT_INNER_LORENZ_ATTRACTOR 27u
+#define EPI_SCULPT_INNER_ROSSLER_ATTRACTOR 28u
+#define EPI_SCULPT_INNER_AIZAWA_ATTRACTOR 29u
+#define EPI_SCULPT_INNER_CHEN_ATTRACTOR 30u
+#define EPI_SCULPT_INNER_TURING 31u
+#define EPI_SCULPT_INNER_MANDELBOX_FOLD 32u
+#define EPI_SCULPT_INNER_HYPERBOLIC_EXPONENTIAL_HOMOTOPY 33u
+#define EPI_SCULPT_INNER_OCTONION_ASSOCIATOR 34u
+#define EPI_SCULPT_INNER_HOLOMORPHIC_POTENTIAL 35u
+#define EPI_SCULPT_INNER_HYPERBOLIC_HONEYCOMB 36u
+#define EPI_SCULPT_INNER_KURAMOTO_LATTICE 37u
+#define EPI_SCULPT_INNER_QUANTUM_WAVE 38u
+#define EPI_SCULPT_INNER_JACOBI_ELLIPTIC_SN_CN 39u
+#define EPI_SCULPT_INNER_CHEBYSHEV_POLYNOMIAL 40u
+#define EPI_SCULPT_INNER_PENROSE_TILING_4D 41u
+#define EPI_SCULPT_INNER_SIPHONOPHORE_ATTRACTOR 42u
+#define EPI_SCULPT_INNER_KALI_SET_ORBIT 43u
+
+#define EPI_SCULPT_REDUCTION_TORUS 0u
+#define EPI_SCULPT_REDUCTION_GRID 1u
+#define EPI_SCULPT_REDUCTION_CLAMP 2u
+#define EPI_SCULPT_REDUCTION_PAREIDOLIA_CATHEDRAL 3u
+#define EPI_SCULPT_REDUCTION_AMMANN_BEENKER 4u
+#define EPI_SCULPT_REDUCTION_POINCARE_HYPERBOLIC 5u
+#define EPI_SCULPT_REDUCTION_CLIFFORD_FOLIATION 6u
+
+#define EPI_SCULPT_SEED_BORDER 0u
+#define EPI_SCULPT_SEED_WAVERING 1u
+#define EPI_SCULPT_SEED_CROSS 2u
+#define EPI_SCULPT_SEED_DIPOLE 3u
+#define EPI_SCULPT_SEED_AIRY 4u
+#define EPI_SCULPT_SEED_LISSAJOUS 5u
+#define EPI_SCULPT_SEED_ATTRACTOR 6u
+#define EPI_SCULPT_SEED_HOPF 7u
+#define EPI_SCULPT_SEED_HYPERSPHERE_4D 8u
+#define EPI_SCULPT_SEED_CROSS_POLYTOPE_4D 9u
+#define EPI_SCULPT_SEED_TORUS_KNOT_PQ 10u
+#define EPI_SCULPT_SEED_CHLADNI 11u
+#define EPI_SCULPT_SEED_TURING 12u
+#define EPI_SCULPT_SEED_JULIA_SLICE 13u
+#define EPI_SCULPT_SEED_OCTONION_S7 14u
+
+#define EPI_SCULPT_COLOR_STANDARD 0u
+#define EPI_SCULPT_COLOR_DISTANCE 1u
+#define EPI_SCULPT_COLOR_CHANNEL_SWAP 2u
+#define EPI_SCULPT_COLOR_GLITCH 3u
+#define EPI_SCULPT_COLOR_THERMAL_HOLOGRAM 4u
+#define EPI_SCULPT_COLOR_VAPORWAVE 5u
+#define EPI_SCULPT_COLOR_GOLDEN_RATIO 6u
+#define EPI_SCULPT_COLOR_HOPF 7u
+#define EPI_SCULPT_COLOR_QUATERNION 8u
+#define EPI_SCULPT_COLOR_THIN_FILM 9u
+#define EPI_SCULPT_COLOR_CHROMATIC_DISPERSION 10u
+#define EPI_SCULPT_COLOR_PHENOMENOLOGICAL_PALETTE 11u
+#define EPI_SCULPT_COLOR_OP_ART_ISOLUMINANCE 12u
+#define EPI_SCULPT_COLOR_KINETIC_VELOCITY 13u
+#define EPI_SCULPT_COLOR_GEOMETRIC_CURVATURE 14u
+#define EPI_SCULPT_COLOR_BIOLUMINESCENCE 15u
+
+#define EPI_SCULPT_SEED_FIBONACCI_PHYLLOTAXIS 15u
+
+typedef struct SculptureProgramParamsGpu {
+    uint abi_version;
+    uint byte_size;
+    ushort inner_id;
+    ushort inner_idB;
+    ushort reduction_id;
+    ushort reduction_idB;
+
+    ushort output_mode;
+    ushort output_modeB;
+    ushort seed_id;
+    ushort seed_idB;
+    ushort color_effect_id;
+    ushort enable4D;
+
+    uint stageMask;
+    uint feedback_iterations;
+    uint sample_count;
+    float latent_w;
+    float topologyBlend;
+
+    float4 pre_affine;
+    float4 post_affine;
+    float4 dynamics_seed;
+    float4 pulse_material;
+    float4 output_scale;
+    float4 kinetic_flow;
+    float4 audio_spectrum;
+    uint auxiliary_resolution_scale;
+    uint attractor_mode;
+    float attractor_strength;
+    float chroma_breath;
+    float luma_drift;
+    float rotor_alpha;
+    float rotor_beta;
+    float rotor_theta_4d;
+    float4 optical_volumetric;
+    float4 temporal_control;
+} SculptureProgramParamsGpu;
+
+typedef struct SculptureFrameGpu {
+    uint abi_version;
+    uint byte_size;
+    uint sample_count;
+    uint generation;
+
+    float time;
+    float morph;
+    float delta_seconds;
+    float reserved_f32;
+} SculptureFrameGpu;
+
+typedef struct SculptureSampleGpu {
+    float4 position_radius;
+    float4 color_tint;
+    float4 normal_vector;
+    float4 velocity;
+    uint materialRole;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+} SculptureSampleGpu;
+
+typedef struct SculptureAnalyticsGpu {
+    uint activeInstanceCount;
+    uint generation;
+    float totalOrbit;
+    float totalKineticEnergy;
+
+    float boundsMin[3];
+    float averageSpeed;
+
+    float boundsMax[3];
+    float reserved;
+} SculptureAnalyticsGpu;
+
+inline int epi_sculpt_program_abi_valid(
+    const __constant SculptureProgramParamsGpu* params) {
+    return params->abi_version == EPI_SCULPT_ABI_VERSION
+        && params->byte_size == 224u;
+}
+
+inline int epi_sculpt_frame_abi_valid(
+    const __constant SculptureFrameGpu* frame) {
+    return frame->abi_version == EPI_SCULPT_ABI_VERSION
+        && frame->byte_size == 32u;
+}
+
+#endif // EPI_SCULPTURE_GPU_ABI_CLH

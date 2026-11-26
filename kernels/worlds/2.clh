@@ -1,0 +1,122 @@
+// -----------------------------------------------------------------------------
+// Component: Hopf Fibers Constellation (Generator ID: 2)
+// -----------------------------------------------------------------------------
+// Utilizes the extended pbrOverride ABI for per-instance metallic and
+// roughness control driven by SO(4) orientation and Hopf fiber phase.
+// -----------------------------------------------------------------------------
+
+#define EPI_HOPF_ROLE_FORM 0u
+#define EPI_HOPF_ROLE_STRUCTURE 1u
+#define EPI_HOPF_ROLE_ACCENT 2u
+
+inline uint epi_hopf_material_role(const uint semanticRole,
+                                   const __constant WorldRecipeGpu* recipe) {
+    return min(semanticRole, recipe->materialBandCount - 1u);
+}
+
+inline void epi_world_write_hopf_fiber(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+
+    const uint activeCount = min(recipe->instanceBudget, 32u);
+    if (index >= activeCount) return;
+
+    // Distribute base points on the Bloch sphere (S^2) via Fibonacci spiral
+    const float phi = (sqrt(5.0f) - 1.0f) * 0.5f; 
+    const float z = 1.0f - (2.0f * (float)index + 1.0f) / (float)activeCount;
+    const float theta = 2.0f * M_PI_F * (float)index * phi;
+    
+    // Inverse Hopf Map: Lift from S^2 (x,y,z) to S^3 (u,v,w,s)
+    const float r1 = sqrt((1.0f + z) * 0.5f);
+    const float r2 = sqrt((1.0f - z) * 0.5f);
+
+    const float evolution = frame->time * 0.1f * params->dynamics_seed.x;
+    const float phase1 = evolution;
+    const float phase2 = evolution + theta;
+
+    const float4 ptS3 = (float4)(
+        r1 * cos(phase1),
+        r1 * sin(phase1),
+        r2 * cos(phase2),
+        r2 * sin(phase2)
+    );
+
+    // SO(4) rotation
+    float4 rot_p4 = epi_rotate_so4(ptS3, params->rotor_alpha, params->rotor_beta, params->rotor_theta_4d * 0.5f, params->rotor_theta_4d * 0.5f);
+
+    // Stereographic projection to R^3
+    const float kappa = 0.8f * clamp(params->topologyBlend, 0.25f, 0.95f);
+    const float denom = fmax(1.0f - kappa * rot_p4.w, 0.1f);
+    const float invDenom = 1.0f / denom;
+    const float worldScale = 4.5f * params->output_scale.x;
+
+    const float3 position = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    // Hopf vector field tangent
+    const float4 tangentS3 = (float4)(
+        -r1 * sin(phase1),
+         r1 * cos(phase1),
+        -r2 * sin(phase2),
+         r2 * cos(phase2)
+    );
+    float4 rot_t4 = epi_rotate_so4(tangentS3, params->rotor_alpha, params->rotor_beta, params->rotor_theta_4d * 0.5f, params->rotor_theta_4d * 0.5f);
+    
+    float3 tangent3 = ((float3)(rot_t4.x, rot_t4.y, rot_t4.z) * denom
+                      + (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * (kappa * rot_t4.w))
+                      * (invDenom * invDenom);
+    
+    float tLen = length(tangent3);
+    tangent3 = (tLen > 1e-4f) ? (tangent3 / tLen) : (float3)(0.0f, 1.0f, 0.0f);
+
+    const float4 orientation = epi_world_align_y(tangent3);
+
+    const float scale = params->output_scale.y * (0.6f + 0.4f * sin(phase1 * 2.0f));
+
+    // Phase-driven rendering utilizing the ABI pbrOverride
+    const float hue = (float)index / (float)activeCount + frame->time * 0.02f;
+    const float3 tint = epi_world_phase_colour(hue, 1.0f);
+
+    const float metallic = 0.95f;
+    const float roughness = 0.02f + 0.2f * fabs(cos(phase1 + theta));
+    const float emissive = max(sin(phase1 * 3.0f + theta), 0.0f) * 1.5f;
+
+    WorldInstanceGpu inst;
+    inst.positionScale = (float4)(position, scale);
+    inst.axisScale = (float4)(1.0f, 1.0f, 4.0f, 1.0f); // Stretch primitive along tangent
+    inst.orientation = orientation;
+    inst.tintEmission = (float4)(tint, emissive);
+    inst.pbrOverride = (float4)(metallic, roughness, 0.0f, emissive); // Explicit material roles
+    inst.primitiveId = recipe->primitiveId; // Typically TorusKnot
+    // Semantic material role:
+    // - Accent: fibers with peak emissive energy or high SO(4) rotor activity
+    // - Structure: outer fibers weaving the Clifford torus boundary
+    // - Form: central equatorial fiber bundle
+    uint semanticRole = EPI_HOPF_ROLE_FORM;
+    if (emissive > 0.85f) {
+        semanticRole = EPI_HOPF_ROLE_ACCENT;
+    } else if (fabs(z) > 0.45f) {
+        semanticRole = EPI_HOPF_ROLE_STRUCTURE;
+    }
+    inst.materialBand = epi_hopf_material_role(semanticRole, recipe);
+    inst.flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    inst.sourceIndex = index;
+
+    instances[index] = inst;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+    if (index >= 32u) return;
+
+    epi_world_write_hopf_fiber(index, params, frame, recipe, output->instances);
+}
+#endif

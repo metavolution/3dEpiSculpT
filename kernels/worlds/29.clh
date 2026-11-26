@@ -1,0 +1,162 @@
+// -----------------------------------------------------------------------------
+// Component: Dirac Magnetic Monopole & Quantum Flux Tunnel (Generator ID: 29)
+// -----------------------------------------------------------------------------
+// THEORETICAL FOUNDATION: DIRAC MAGNETIC MONOPOLE & WU-YANG FIBER BUNDLE
+//
+// In 1931, P.A.M. Dirac demonstrated that if even one magnetic monopole of
+// charge g exists in the cosmos, all electric charge e must be quantized:
+//     e * g = n * (hbar / 2)    (n in Z)
+//
+// The monopole produces an isotropic radial magnetic field:
+//     B(r) = (mu_0 * g) / (4 * pi * r^2) * r_hat
+//
+// In epimorphic space, this radial 1/r^2 field is mapped via the complex Exp
+// map: Cartesian lines become concentric circles, and vertical lines become
+// radial flux rays.
+//
+// Key Mathematical Features:
+// 1. Quasi-73-Fold Feynman Vertex Channels:
+//    sqrt(alpha) = 1/sqrt(137.036) ≈ 0.08544 rad (4.89°): the electromagnetic
+//    coupling amplitude of quantum electrodynamics. 360° / 4.89° ≈ 73.6 channels.
+// 2. Irrational Depth Periodicity:
+//    -arctan(2*pi) ≈ -80.96° post-rotation provides ~4.45 layers per depth period,
+//    guaranteeing that the monopole flux shells never repeat.
+// 3. U(1) Wu-Yang Gauge Potential on S^2:
+//    A+(r, theta, phi) = g / (4*pi*r) * ((1 - cos(theta)) / sin(theta)) * phi_hat
+//    A-(r, theta, phi) = g / (4*pi*r) * ((-1 - cos(theta)) / sin(theta)) * phi_hat
+// 4. Axial Dirac String Singularity:
+//    Thin solenoid flux tube along the polar axis carrying the return flux.
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_dirac_monopole_quantum_tunnel(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 2048u);
+    const float time = frame->time * 0.5f;
+    const float normIdx = convert_float(index) / convert_float(max(1u, activeInstanceCount));
+
+    // Distribution: 73 discrete radial angular channels across concentric depth shells
+    const uint totalChannels = 73u;
+    const uint channelId = index % totalChannels;
+    const uint shellId = index / totalChannels;
+    const float shellNorm = convert_float(shellId) / convert_float(max(1u, activeInstanceCount / totalChannels));
+
+    // Fine structure constant coupling angle: sqrt(alpha) ≈ 0.08544 rad
+    const float channelAngle = convert_float(channelId) * (6.28318530718f / convert_float(totalChannels));
+
+    // Logarithmic radial depth with -arctan(2*pi) spiral pitch
+    const float depthPitch = -1.4130f; // -arctan(2*pi)
+    const float radius = 0.65f + 4.5f * exp(shellNorm * 1.6f - 1.2f);
+    const float spiralPhi = channelAngle + shellNorm * depthPitch * 3.0f + time * 0.2f * params->dynamics_seed.x;
+
+    // Polar elevation angle theta: distributed across sphere with concentration near equator
+    const float theta = 0.15f + 2.84f * (0.5f + 0.5f * sin(normIdx * 18.8495f + time * 0.15f));
+
+    // Spherical coordinates
+    const float sinTheta = sin(theta);
+    const float cosTheta = cos(theta);
+    const float sinPhi = sin(spiralPhi);
+    const float cosPhi = cos(spiralPhi);
+
+    // Cartesian position on 3D flux sphere
+    float3 p = (float3)(
+        radius * sinTheta * cosPhi,
+        radius * cosTheta,
+        radius * sinTheta * sinPhi
+    );
+
+    // 4D Latent Coordinate & Wu-Yang Gauge Potential Phase
+    // U(1) gauge connection A_phi = (1 - cos(theta)) / (sin(theta) + 1e-4f)
+    const float wuYangA = (1.0f - cosTheta) / (fabs(sinTheta) + 1e-3f);
+    const float latentW = params->dynamics_seed.w + 0.8f * sin(time * 0.6f + wuYangA * 0.25f);
+
+    // SO(4) Dual-Isoclinic Rotation (precession of the 4D Dirac monopole)
+    const float thetaL = params->rotor_alpha + time * 0.25f;
+    const float thetaR = params->rotor_beta + time * 0.15f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    const float4 pt4D = (float4)(p.x, p.y, p.z, latentW);
+    const float4 rot_p4 = epi_rotate_so4(pt4D, thetaL, thetaR, phiL, phiR);
+
+    // Conformal 4D stereographic projection back to 3D
+    const float stereoScale = 1.0f / (1.0f + clamp(rot_p4.w * 0.18f, -0.6f, 0.6f));
+    p = rot_p4.xyz * stereoScale;
+
+    // Axial Dirac String Solenoid Proximity: distance to negative Y/Z axis
+    const float distToAxis = sqrt(p.x * p.x + p.z * p.z);
+    const bool isDiracString = (distToAxis < 0.45f && p.y < 0.0f);
+
+    // Scale calculation: flux tube density modulated by QED coupling
+    float baseScale = 0.038f * (1.0f + 0.6f * sin(shellNorm * 12.566f - time * 2.0f));
+    if (isDiracString) {
+        baseScale *= 1.8f; // Singular flux solenoid enhancement
+    }
+    baseScale *= params->output_scale.y;
+
+    // Material Band & Color Tint:
+    // Band 0: Superconducting copper shell
+    // Band 1: Electric cyan quantum flux tube
+    // Band 2: High-energy Dirac string singularity
+    uint materialBand = 1u;
+    float3 tint = (float3)(0.10f, 0.85f, 0.95f);
+    float emission = 0.35f + 0.4f * sin(time * 3.0f + channelAngle * 2.0f);
+
+    if (isDiracString) {
+        materialBand = 2u;
+        tint = (float3)(0.98f, 0.15f, 0.72f);
+        emission = 2.4f + 1.2f * sin(time * 6.0f);
+    } else if (shellId % 3u == 0u) {
+        materialBand = 0u;
+        tint = (float3)(0.95f, 0.68f, 0.35f);
+        emission = 0.10f;
+    }
+
+    // Audio Resonance Excitation (Probability flux wave)
+    const float excitation = params->audio_spectrum.x * 2.5f + params->audio_spectrum.y * 1.2f;
+    emission += excitation * 2.0f;
+    baseScale *= (1.0f + excitation * 0.4f);
+
+    // Write packed GPU instance
+    instances[index].positionScale = (float4)(p, max(baseScale, 0.005f));
+    instances[index].orientation = epi_world_align_y(normalize(p + (float3)(1e-4f)));
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 2048u);
+
+    // Master work-item initializes the output frame header
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_dirac_monopole_quantum_tunnel(index, params, frame, recipe, output->instances);
+}
+#endif

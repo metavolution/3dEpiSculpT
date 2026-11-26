@@ -1,0 +1,16 @@
+# epiC Recursive Counter-Winding Hopf Torus Recipe (.epihopf)
+# title: Woven Rosette Loom (m=5, D=2, Alternating Over/Under Braid)
+version = 1
+fibers_per_family = 5
+logical_depth = 2
+placement_mode = uniform-similarity
+plus_initial_radians = 0
+plus_radians_per_second = 0.14
+minus_initial_radians = 0
+minus_radians_per_second = -0.14
+child_scale = 0.105
+child_twist_radians = 0
+child_normal_offset = 0.015
+fiber_radius = 0.021
+conformal_scale_exponent = 0
+weave_amplitude = 0.038

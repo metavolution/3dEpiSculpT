@@ -1,0 +1,117 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_STRANGE_ATTRACTOR_LANTERNS (Generator ID: 4)
+// -----------------------------------------------------------------------------
+
+inline float3 epi_world_eval_attractor_trajectory(
+    float t,
+    float homotopy) {
+    // 1. Lorenz Dual-Lobe Butterfly Dynamics
+    const float sL = sin(0.43f * t);
+    const float sigmaL = (sL >= 0.0f) ? 1.0f : -1.0f;
+    const float rL = 1.65f + 0.85f * sin(1.17f * t);
+    const float thetaL = 2.41f * t;
+    const float xL = sigmaL * 1.85f + rL * cos(thetaL);
+    const float yL = rL * sin(thetaL) * 0.85f;
+    const float zL = 1.6f + 0.95f * cos(2.0f * thetaL) + 1.25f * (1.0f - sL * sL);
+
+    // 2. Rössler Conical Expanding Spiral & Z-Escape Fold Dynamics
+    const float phiR = 1.85f * t;
+    const float rR = 0.55f + 2.25f * (0.5f + 0.5f * sin(0.37f * t));
+    const float xR = rR * cos(phiR);
+    const float yR = rR * sin(phiR);
+    const float spike = fmax(0.0f, xR - 1.15f);
+    const float zR = 0.35f + 2.45f * (1.0f - exp(-1.75f * spike));
+
+    return mix((float3)(xR, yR, zR), (float3)(xL, yL, zL), homotopy);
+}
+
+inline void epi_world_write_attractor_lantern(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const float tempo = 0.45f + 1.25f * fabs(params->dynamics_seed.x);
+    const float t = convert_float(index) * 0.092f + frame->time * tempo;
+    const float homotopy = clamp(0.5f + 0.5f * params->latent_w, 0.0f, 1.0f);
+
+    const float3 p0 = epi_world_eval_attractor_trajectory(t, homotopy);
+    const float3 pNext = epi_world_eval_attractor_trajectory(t + 0.025f, homotopy);
+
+    float3 tangent = pNext - p0;
+    const float tangentLen2 = dot(tangent, tangent);
+    tangent = (tangentLen2 > 1.0e-8f) ? (tangent * rsqrt(tangentLen2)) : (float3)(0.0f, 1.0f, 0.0f);
+
+    const float3 position = p0 * params->output_scale.x;
+
+    // Evaluate chaotic singularity & transit indicators for semantic material roles:
+    // Role 0 = Form: laminar spiral core basin.
+    // Role 1 = Structure: inter-lobe / outer ribbon transit bridge.
+    // Role 2 = Accent: high-curvature escape apex / z-spike flare.
+    const float sL = sin(0.43f * t);
+    const float spike = fmax(0.0f, p0.x - 1.15f);
+    const float apexScore = mix(clamp(spike / 1.6f, 0.0f, 1.0f),
+                                (1.0f - sL * sL) * clamp(p0.z / 3.2f, 0.0f, 1.0f),
+                                homotopy);
+    const bool isApex = apexScore > 0.45f;
+    const bool isBridge = !isApex && (fabs(sL) < 0.32f || p0.y > 1.2f);
+    const uint semanticRole = isApex ? 2u : (isBridge ? 1u : 0u);
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Orientation aligns mesh Y axis directly with trajectory tangent
+    const float4 orientation = epi_world_align_y(tangent);
+
+    // Dynamic phase colour and emissive radiance
+    const float phase = 0.5f + 0.5f * sin(0.31f * t)
+        + params->pulse_material.w * frame->time
+        + 0.12f * convert_float(semanticRole);
+    float3 tint = epi_world_phase_colour(phase, 0.88f);
+    if (semanticRole == 2u) {
+        // Coronal flare ignition: shift toward radiant gold/amber
+        tint = mix(tint, (float3)(1.0f, 0.92f, 0.45f), 0.75f);
+    } else if (semanticRole == 1u) {
+        // Translucent bridge: shift toward cyan-emerald
+        tint = mix(tint, (float3)(0.15f, 0.85f, 0.92f), 0.65f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (1.35f + 1.25f * apexScore)
+        : ((semanticRole == 1u) ? 0.35f : 0.12f);
+
+    const float baseScale = fmax(params->output_scale.y * (0.14f + 0.08f * apexScore), 0.02f);
+    instances[index].positionScale = (float4)(position, baseScale);
+
+    // Anisotropic scaling stretches lantern along flow tangent
+    const float lengthFactor = 1.5f + 1.2f * apexScore;
+    const float widthFactor = 0.45f + 0.15f * (1.0f - apexScore);
+    instances[index].axisScale = (float4)(widthFactor, lengthFactor, widthFactor, 1.0f);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides: metallic, roughness, transmission, reserved
+    if (semanticRole == 2u) {
+        instances[index].pbrOverride = (float4)(0.92f, 0.10f, 0.0f, 0.0f);
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.40f, 0.22f, 0.35f, 0.0f);
+    } else {
+        instances[index].pbrOverride = (float4)(0.85f, 0.18f, 0.0f, 0.0f);
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_attractor_lantern(index, params, frame, recipe, output->instances);
+}
+#endif

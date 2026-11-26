@@ -1,0 +1,120 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_EPIMORPHIC_GYROID_MAZE (Generator ID: 9)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_epimorphic_gyroid_maze(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // Epimorphic Gyroid Minimal Surface Labyrinth:
+    // Schoen's triply periodic minimal surface (TPMS):
+    // sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0
+    const uint activeCount = epi_world_active_count(recipe, 2400u);
+    const uint sourceIndex = min((index * 2400u) / activeCount, 2399u);
+
+    // 2400 points mapped across a 15x13x12 volume
+    const int gridX = 15;
+    const int gridY = 13;
+    const int gridZ = 12;
+    const int xIdx = (int)(sourceIndex % gridX) - (gridX / 2);
+    const int yIdx = (int)((sourceIndex / gridX) % gridY) - (gridY / 2);
+    const int zIdx = (int)(sourceIndex / (gridX * gridY)) - (gridZ / 2);
+
+    const float tempo = 0.35f + 0.45f * fabs(params->dynamics_seed.x);
+    const float time = frame->time * tempo;
+    const float spatialFreq = 0.65f + 0.15f * sin(time * 0.18f);
+
+    // Initial grid point in world space
+    const float3 p0 = (float3)(convert_float(xIdx), convert_float(yIdx), convert_float(zIdx)) * 0.72f;
+    const float3 pEval = p0 * spatialFreq + (float3)(time * 0.25f, time * 0.38f, time * 0.15f);
+
+    // Gyroid evaluation: f = sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
+    const float gyroid = sin(pEval.x) * cos(pEval.y)
+                       + sin(pEval.y) * cos(pEval.z)
+                       + sin(pEval.z) * cos(pEval.x);
+
+    // Analytic gradient: df/dx, df/dy, df/dz
+    const float3 grad = (float3)(
+        cos(pEval.x) * cos(pEval.y) - sin(pEval.z) * sin(pEval.x),
+        cos(pEval.y) * cos(pEval.z) - sin(pEval.x) * sin(pEval.y),
+        cos(pEval.z) * cos(pEval.x) - sin(pEval.y) * sin(pEval.z));
+    const float gradSq = dot(grad, grad);
+    const float gradLen = sqrt(fmax(gradSq, 1.0e-5f));
+    const float3 normal = grad / gradLen;
+
+    // Single-step Newton-Raphson projection onto the zero-curvature minimal surface
+    const float3 projectedOffset = normal * (gyroid / (gradLen + 0.12f));
+    const float3 surfacePos = (p0 - projectedOffset) * params->output_scale.xyz;
+
+    // Epimorphic ripple along the surface
+    const float ripple = sin(pEval.x * 2.2f + pEval.y * 1.8f - time * 2.5f + params->latent_w * 3.14159f);
+    const float distToIso = fabs(gyroid);
+    const float proximity = clamp(1.0f - distToIso * 0.95f, 0.0f, 1.0f);
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: core skeletal nodes where gyroid surface is stable (distToIso < 0.22)
+    // Role 1 = Structure: flowing minimal surface membrane walls (0.22 <= distToIso < 0.75)
+    // Role 2 = Accent: high Gaussian curvature / chiral ripple peaks (distToIso >= 0.75 or ripple > 0.82)
+    uint semanticRole = 1u;
+    if (distToIso < 0.22f) {
+        semanticRole = 0u;
+    } else if (distToIso > 0.75f || ripple > 0.82f) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Phase colour and emission
+    const float hue = 0.62f + 0.18f * sin(surfacePos.y * 0.4f + time * 0.2f) + 0.12f * ripple;
+    float3 tint = epi_world_phase_colour(hue, proximity);
+    if (semanticRole == 0u) {
+        // Polished platinum-titanium skeleton
+        tint = mix(tint, (float3)(0.88f, 0.90f, 0.96f), 0.75f);
+    } else if (semanticRole == 1u) {
+        // Bismuth opal jade membrane
+        tint = mix(tint, (float3)(0.22f, 0.82f, 0.65f), 0.60f);
+    } else {
+        // Radiant chiral amber/gold wave crest
+        tint = mix(tint, (float3)(1.0f, 0.78f, 0.25f), 0.80f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (0.85f + 1.40f * proximity * (0.5f + 0.5f * ripple))
+        : ((semanticRole == 1u) ? (0.20f + 0.35f * proximity) : 0.06f);
+
+    const float baseScale = fmax(params->output_scale.y * (0.16f + 0.08f * proximity), 0.015f);
+    instances[index].positionScale = (float4)(surfacePos, baseScale);
+
+    // Anisotropic scaling: flattened along surface normal, wide along tangent plane
+    instances[index].axisScale = (float4)(1.35f, 0.28f, 1.35f, 1.0f);
+    instances[index].orientation = epi_world_align_y(normal);
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides:
+    if (semanticRole == 0u) {
+        instances[index].pbrOverride = (float4)(0.92f, 0.12f, 0.0f, 0.0f); // High-specular titanium
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.35f, 0.28f, 0.0f, 0.0f); // Opalescent minimal surface
+    } else {
+        instances[index].pbrOverride = (float4)(0.90f, 0.08f, 0.0f, 0.0f); // Luminescent chiral crest
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_epimorphic_gyroid_maze(index, params, frame, recipe, output->instances);
+}
+#endif

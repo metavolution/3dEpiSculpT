@@ -1,0 +1,93 @@
+// -----------------------------------------------------------------------------
+// Component: Conformal Hyperbolic Rose Petal Relief 2.5D (Generator ID: 23)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_conformal_relief_25d(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint gridSide = 32u;
+    const uint ix = index % gridSide;
+    const uint iy = index / gridSide;
+
+    const float u = (convert_float(ix) + 0.5f) / convert_float(gridSide) * 2.0f - 1.0f;
+    const float v = (convert_float(iy) + 0.5f) / convert_float(gridSide) * 2.0f - 1.0f;
+    const float r = sqrt(u * u + v * v);
+    const float theta = atan2(v, u);
+
+    const float rClamped = fmin(r, 0.95f);
+    const float poincareMetric = 2.0f / fmax(1.0f - rClamped * rClamped, 0.15f);
+
+    const float evolution = frame->time * (0.22f + 0.10f * params->dynamics_seed.x);
+    const float petals = 5.0f;
+    const float roseAngle = petals * theta + evolution * 1.5f;
+    const float roseCurve = cos(roseAngle);
+
+    const float height = 0.35f * poincareMetric * roseCurve * (1.0f - rClamped * 0.5f)
+        * (0.6f + 0.4f * params->topologyBlend);
+
+    const float worldScale = 3.8f * params->output_scale.x;
+    const float3 pos3 = (float3)(u * worldScale, height * worldScale * 0.45f, v * worldScale);
+
+    const float dh_du = -0.35f * poincareMetric * sin(roseAngle) * (-sin(theta) / fmax(r, 0.05f));
+    const float dh_dv = 0.35f * poincareMetric * sin(roseAngle) * (cos(theta) / fmax(r, 0.05f));
+    const float3 normal = normalize((float3)(-dh_du * 0.2f, 1.0f, -dh_dv * 0.2f));
+    const float4 orientation = epi_world_align_y(normal);
+
+    const float pulse = 0.5f + 0.5f * sin(evolution * 2.5f + theta * 3.0f);
+    const float scale = params->output_scale.y * 0.085f * (0.85f + 0.15f * pulse);
+
+    uint band = 0u;
+    if (height > 0.45f) {
+        band = 1u;
+    } else if (rClamped > 0.75f) {
+        band = 2u;
+    }
+
+    const float3 tint = (band == 1u)
+        ? (float3)(0.98f, 0.75f, 0.22f)
+        : ((band == 2u)
+            ? (float3)(0.18f, 0.88f, 0.96f)
+            : (float3)(0.12f, 0.78f, 0.55f));
+
+    const float emission = (band == 1u) ? (0.4f + 0.5f * pulse) : (0.15f + 0.2f * pulse);
+
+    instances[index].positionScale = (float4)(pos3, scale);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = band % recipe->materialBandCount;
+    instances[index].flags = 0u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_conformal_relief_25d(index, params, frame, recipe, output->instances);
+}
+#endif

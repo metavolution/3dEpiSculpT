@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "preset": "dielectric_opencl",
+  "camera_override": 1,
+  "cameraEye": [0.0, 0.0, 0.0],
+  "cameraTarget": [0.0, 0.0, -1.0],
+  "cameraUp": [0.0, 1.0, 0.0],
+  "inner": "sin",
+  "feedbackIterations": 6,
+  "patternSpeed": 0.5,
+  "pre_scaleReal": 3.0,
+  "pre_scaleImag": 0.333333333,
+  "pre_offsetReal": 0.002,
+  "pre_offsetImag": 0.1,
+  "seedWidth": 1.0,
+  "seedAlpha": 1.0,
+  "seedPulseFrequency": 9.0,
+  "seedPulseAmplitude": 1.0,
+  "hueRotation": 0.65,
+  "worldScale": 1.0
+}

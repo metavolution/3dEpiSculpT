@@ -1,0 +1,103 @@
+// -----------------------------------------------------------------------------
+// Component: Hydrogen Atom Orbitals (Generator ID: 19)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_hydrogen_orbitals(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    
+    // 32x32x32 = 32768 maximum instance budget for a dense probability cloud
+    const uint activeCount = epi_world_active_count(recipe, 32768u);
+    const uint i = min(index, activeCount - 1u);
+    
+    // Create a 32x32x32 lattice
+    const uint xIdx = i % 32u;
+    const uint yIdx = (i / 32u) % 32u;
+    const uint zIdx = (i / 1024u) % 32u;
+    
+    const float3 pos = (float3)(
+        convert_float(xIdx) - 15.5f,
+        convert_float(yIdx) - 15.5f,
+        convert_float(zIdx) - 15.5f
+    ) * 0.45f;
+    
+    const float r = length(pos);
+    const float theta = acos(pos.y / (r + 1e-5f));
+    const float phi = atan2(pos.z, pos.x);
+
+    const float time = frame->time * params->dynamics_seed.x;
+    
+    // Superposition of Hydrogen Orbitals
+    const float a0 = 1.0f; 
+    const float rho = r / a0;
+    
+    // State 1: n=4, l=3, m=0 (f_z3 orbital)
+    // R_43 ~ rho^3 exp(-rho/4)
+    const float R43 = pow(rho, 3.0f) * exp(-rho / 4.0f);
+    const float Y30_mag = 5.0f * pow(cos(theta), 3.0f) - 3.0f * cos(theta);
+    const float psi_f0 = R43 * Y30_mag * cos(time * 2.0f);
+    
+    // State 2: n=4, l=3, m=2 (f_xyz / f_z(x2-y2) orbital)
+    const float Y32_mag = sin(theta) * sin(theta) * cos(theta);
+    // Complex phase exp(2i * phi - i * omega * t)
+    const float psi_f2_re = R43 * Y32_mag * cos(2.0f * phi - time * 3.5f);
+    const float psi_f2_im = R43 * Y32_mag * sin(2.0f * phi - time * 3.5f);
+    const float psi_f2_sq = psi_f2_re * psi_f2_re + psi_f2_im * psi_f2_im;
+    
+    // Blend the states based on topology control to collapse the wavefunction
+    const float prob_density = mix(psi_f0 * psi_f0, psi_f2_sq, params->topologyBlend);
+    
+    // Audio Reactivity (Excitation / Probability pumping)
+    float excitation = params->audio_spectrum.x * 2.0f + params->audio_spectrum.y;
+    float density_mod = prob_density * (1.0f + excitation * sin(r * 4.0f - time * 8.0f));
+    
+    // Scale is heavily thresholded so we only see the high probability density regions
+    float scale = (density_mod > 0.05f) ? (density_mod * 0.04f * params->output_scale.y) : 0.0f;
+    
+    // Color phase represents the complex argument of the wavefunction
+    float phase_angle = atan2(psi_f2_im, psi_f2_re) / 6.28318f;
+    float3 tint = epi_world_phase_colour(phase_angle + time * 0.1f + params->pulse_material.z, 0.9f);
+    
+    // High emission where density is highest
+    float emission = 0.1f + density_mod * 3.0f + excitation * 2.0f;
+
+    instances[index].positionScale = (float4)(pos, fmax(scale, 0.001f));
+    instances[index].orientation = epi_world_align_y(normalize(pos + (float3)(1e-4f)));
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = xIdx % recipe->materialBandCount;
+    instances[index].flags = (scale > 0.002f) ? 1u : 0u;
+    instances[index].sourceIndex = i;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 32768u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_hydrogen_orbitals(index, params, frame, recipe, output->instances);
+}
+#endif

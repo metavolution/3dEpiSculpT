@@ -1,0 +1,157 @@
+// -----------------------------------------------------------------------------
+// Component: Clifford-Hopf Multi-Soliton Lattice 4D (Generator ID: 20)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_clifford_hopf_soliton_lattice(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 1024.0f
+            / convert_float(activeCount)),
+        1023u);
+
+    // Organization: 16 nested Villarceau foliation rings, each carrying 64 soliton torus knot cells
+    const uint rings = 16u;
+    const uint pointsPerRing = 64u;
+    const uint ring = sourceIndex / pointsPerRing;
+    const uint point = sourceIndex % pointsPerRing;
+
+    const float tau = 6.28318530718f;
+    const float phi = 1.61803398875f;
+    const float ringF = convert_float(ring);
+    const float pointF = convert_float(point);
+
+    // 1. Villarceau / Hopf fiber foliation angles on S^3
+    const float alpha = (ringF + 1.0f) * (1.57079632679f / (convert_float(rings) + 1.0f));
+    const float cosA = cos(alpha);
+    const float sinA = sin(alpha);
+    const float phaseTwist = ringF * (tau / convert_float(rings));
+
+    // Dynamic temporal and latent coordinate evolution
+    const float tempo = 0.35f + 1.6f * fabs(params->dynamics_seed.x);
+    const float evolution = frame->time * tempo;
+    const float u = pointF * (tau / convert_float(pointsPerRing));
+    // Null curve parameter v traversing the fiber with winding number 2 and twist
+    const float v = 2.0f * u + phaseTwist + params->latent_w * 0.382f + evolution * 0.25f;
+
+    // Coordinates on unit 3-sphere S^3 subset R^4 (norm is strictly 1.0)
+    const float4 ptS3 = (float4)(
+        cosA * cos(u),
+        cosA * sin(u),
+        sinA * cos(v),
+        sinA * sin(v)
+    );
+
+    // 2. Analytical 4D tangent vector on S^3: d(ptS3)/du
+    const float4 tangentS3 = (float4)(
+        -cosA * sin(u),
+         cosA * cos(u),
+        -2.0f * sinA * sin(v),
+         2.0f * sinA * cos(v)
+    );
+
+    // 3. SO(4) isoclinic double-rotation in R^4
+    const float thetaL = params->rotor_alpha + frame->time * params->dynamics_seed.x * 0.18f;
+    const float thetaR = params->rotor_beta + frame->time * params->dynamics_seed.x * 0.11f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    float4 rot_p4 = epi_rotate_so4(ptS3, thetaL, thetaR, phiL, phiR);
+    float4 rot_t4 = epi_rotate_so4(tangentS3, thetaL, thetaR, phiL, phiR);
+
+    // Additional 4D Z-W hyperbolic rotation if rotor_theta_4d is set
+    if (fabs(params->rotor_theta_4d) > 1e-5f) {
+        const float cosT = cos(params->rotor_theta_4d * 0.5f);
+        const float sinT = sin(params->rotor_theta_4d * 0.5f);
+        const float zw_p_z = rot_p4.z * cosT - rot_p4.w * sinT;
+        const float zw_p_w = rot_p4.z * sinT + rot_p4.w * cosT;
+        rot_p4.z = zw_p_z;
+        rot_p4.w = zw_p_w;
+
+        const float zw_t_z = rot_t4.z * cosT - rot_t4.w * sinT;
+        const float zw_t_w = rot_t4.z * sinT + rot_t4.w * cosT;
+        rot_t4.z = zw_t_z;
+        rot_t4.w = zw_t_w;
+    }
+
+    // 4. Conformal stereographic projection: pi: S^3 -> R^3
+    const float kappa = 0.68f * clamp(params->topologyBlend, 0.25f, 0.92f);
+    const float denom = fmax(1.0f - kappa * rot_p4.w, 0.18f);
+    const float invDenom = 1.0f / denom;
+
+    const float worldScale = 4.6f * params->output_scale.x;
+    float3 position = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    // 5. Compute differential stereographic 3D tangent: d(pi(rot_p4))/du
+    float3 tangent3 = ((float3)(rot_t4.x, rot_t4.y, rot_t4.z) * denom
+                      + (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * (kappa * rot_t4.w))
+                      * (invDenom * invDenom);
+    float tLen = length(tangent3);
+    tangent3 = (tLen > 1e-4f) ? (tangent3 / tLen) : (float3)(0.0f, 1.0f, 0.0f);
+
+    // 6. Kuramoto non-linear phase-locking foliation wave
+    const float wavePhase = 3.0f * u - evolution * 1.618f + (ringF / convert_float(rings)) * tau;
+    const float coherence = clamp(0.35f + 0.55f * params->topologyBlend + 0.15f * sin(wavePhase), 0.1f, 1.0f);
+
+    // 7. Orientation: align to fiber tangent, then precess spinning q-bit phase
+    const float4 alignToTangent = epi_world_align_y(tangent3);
+    const float spinPhase = v + evolution * 2.2f + params->latent_w * phi;
+    const float4 qubitSpin = epi_world_axis_rotation(tangent3, spinPhase * (0.8f + 0.4f * coherence));
+    const float4 orientation = epi_world_quaternion_multiply(qubitSpin, alignToTangent);
+
+    // 8. Scale & breathing
+    const float pulse = 0.5f + 0.5f * sin(spinPhase * 2.0f);
+    const float scale = params->output_scale.y
+        * (0.16f + 0.08f * cosA + 0.04f * pulse + 0.03f * coherence);
+
+    // 9. Perceptual chromatic dispersion & additive emission
+    const float phaseColour = (u / tau) + (ringF / convert_float(rings)) * 0.382f
+        + params->pulse_material.z + frame->time * params->pulse_material.w;
+    float3 tint = epi_world_phase_colour(phaseColour, coherence);
+    tint = mix((float3)(0.08f, 0.12f, 0.38f), tint, 0.65f + 0.35f * coherence);
+
+    const float radiance = 0.08f
+        + 0.42f * coherence * (0.35f + 0.65f * pulse)
+        + 0.12f * (1.0f - cosA);
+
+    instances[index].positionScale = (float4)(position, fmax(scale, 0.02f));
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, radiance);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = ring % recipe->materialBandCount;
+    instances[index].flags = 1u; // 4D projection enabled
+    instances[index].sourceIndex = sourceIndex;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_clifford_hopf_soliton_lattice(index, params, frame, recipe, output->instances);
+}
+#endif

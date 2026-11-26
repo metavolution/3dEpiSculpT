@@ -1,0 +1,16 @@
+# epiC Recursive Counter-Winding Hopf Torus Recipe (.epihopf)
+# title: Hyper-Vortex Field (m=6, D=2, Conformal Stereographic Metric)
+version = 1
+fibers_per_family = 6
+logical_depth = 2
+placement_mode = conformal-metric
+plus_initial_radians = 0
+plus_radians_per_second = 0.12
+minus_initial_radians = 0
+minus_radians_per_second = -0.18
+child_scale = 0.075
+child_twist_radians = 0.52359877559829882
+child_normal_offset = 0
+fiber_radius = 0.018
+conformal_scale_exponent = 0.85
+weave_amplitude = 0

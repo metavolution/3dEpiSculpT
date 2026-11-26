@@ -1,0 +1,188 @@
+// -----------------------------------------------------------------------------
+// Component: Lie E8 Gosset Root Lattice & 600-Cell Polytope (Generator ID: 22)
+// -----------------------------------------------------------------------------
+
+inline float4 epi_e8_vertex_600cell(uint k, float radius) {
+    const float phi = 1.61803398875f;
+    const float invPhi = 0.61803398875f;
+
+    if (k < 8u) {
+        // 8 vertices: (+-1, 0, 0, 0) and permutations
+        const uint axis = k / 2u;
+        const float sign = (k % 2u == 0u) ? 1.0f : -1.0f;
+        float4 v = (float4)(0.0f);
+        if (axis == 0u) v.x = sign;
+        else if (axis == 1u) v.y = sign;
+        else if (axis == 2u) v.z = sign;
+        else v.w = sign;
+        return v * radius;
+    } else if (k < 24u) {
+        // 16 vertices: (+-1/2, +-1/2, +-1/2, +-1/2)
+        const uint j = k - 8u;
+        const float sx = (j & 1u) ? 0.5f : -0.5f;
+        const float sy = (j & 2u) ? 0.5f : -0.5f;
+        const float sz = (j & 4u) ? 0.5f : -0.5f;
+        const float sw = (j & 8u) ? 0.5f : -0.5f;
+        return (float4)(sx, sy, sz, sw) * radius;
+    } else {
+        // 96 vertices: even permutations of 1/2 (+-phi, +-1, +-phi^-1, 0)
+        const uint j = min(k - 24u, 95u);
+        const uint permIdx = j / 8u; // 0..11 (12 even permutations)
+        const uint signIdx = j % 8u; // 0..7 (8 sign combinations)
+
+        const float s0 = (signIdx & 1u) ? (0.5f * phi) : (-0.5f * phi);
+        const float s1 = (signIdx & 2u) ? 0.5f : -0.5f;
+        const float s2 = (signIdx & 4u) ? (0.5f * invPhi) : (-0.5f * invPhi);
+        const float s3 = 0.0f;
+
+        // 12 even permutations of (s0, s1, s2, s3)
+        // Alternating group A_4
+        float4 v = (float4)(0.0f);
+        switch (permIdx) {
+        case 0u:  v = (float4)(s0, s1, s2, s3); break;
+        case 1u:  v = (float4)(s0, s2, s3, s1); break;
+        case 2u:  v = (float4)(s0, s3, s1, s2); break;
+        case 3u:  v = (float4)(s1, s0, s3, s2); break;
+        case 4u:  v = (float4)(s1, s2, s0, s3); break;
+        case 5u:  v = (float4)(s1, s3, s2, s0); break;
+        case 6u:  v = (float4)(s2, s0, s1, s3); break;
+        case 7u:  v = (float4)(s2, s1, s3, s0); break;
+        case 8u:  v = (float4)(s2, s3, s0, s1); break;
+        case 9u:  v = (float4)(s3, s0, s2, s1); break;
+        case 10u: v = (float4)(s3, s1, s0, s2); break;
+        case 11u: v = (float4)(s3, s2, s1, s0); break;
+        default:  v = (float4)(s0, s1, s2, s3); break;
+        }
+        return v * radius;
+    }
+}
+
+inline void epi_world_write_lie_e8_gosset_lattice(
+    uint index,
+    __constant const SculptureProgramParamsGpu* params,
+    __constant const SculptureFrameGpu* frame,
+    __constant const WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+
+    const uint totalBudget = min(recipe->instanceBudget, 960u);
+    const uint sourceIndex = index;
+    const float invPhi = 0.61803398875f;
+
+    // 1. SO(4) isoclinic rotation parameters
+    const float evolution = frame->time * (0.18f + 0.12f * params->dynamics_seed.x);
+    const float thetaL = params->rotor_alpha + evolution * 0.35f;
+    const float thetaR = params->rotor_beta + evolution * 0.25f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    const float kappa = 0.65f * clamp(params->topologyBlend, 0.20f, 0.95f);
+    const float worldScale = 5.2f * params->output_scale.x;
+
+    if (index < 240u) {
+        // Vertex root mode (Outer 120 roots or Inner 120 golden roots)
+        const bool isInner = (index >= 120u);
+        const uint k = isInner ? (index - 120u) : index;
+        const float radius = isInner ? invPhi : 1.0f;
+
+        float4 pt4 = epi_e8_vertex_600cell(k, radius);
+        if (isInner) {
+            // Isoclinic twist for the dual shell
+            pt4 = epi_rotate_so4(pt4, 0.62831853f, 0.31415926f, 0.0f, 0.0f);
+        }
+
+        // Apply SO(4) rotation
+        float4 rot_p4 = epi_rotate_so4(pt4, thetaL, thetaR, phiL, phiR);
+
+        // Conformal stereographic projection: S^3 -> R^3
+        const float denom = fmax(1.0f - kappa * rot_p4.w, 0.12f);
+        const float invDenom = 1.0f / denom;
+        const float3 pos3 = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+        // Tangent vector from Lie algebra Killing field
+        const float3 tangent3 = normalize((float3)(-rot_p4.y, rot_p4.x, -rot_p4.w) + (float3)(0.001f, 0.001f, 0.001f));
+        const float4 orientation = epi_world_align_y(tangent3);
+
+        const float pulse = 0.5f + 0.5f * sin(evolution * 3.0f + convert_float(index) * 0.05f);
+        const float scale = params->output_scale.y * (isInner ? 0.08f : 0.12f) * (0.85f + 0.15f * pulse);
+
+        // Material band & chromatic tint
+        const uint band = isInner ? 1u : 0u;
+        const float3 tint = isInner
+            ? (float3)(0.15f, 0.85f, 0.95f) // Coxeter cyan
+            : (float3)(0.98f, 0.76f, 0.22f); // Weyl gold
+        const float emission = isInner ? (0.4f + 0.6f * pulse) : (0.2f + 0.3f * pulse);
+
+        instances[index].positionScale = (float4)(pos3, scale);
+        instances[index].orientation = orientation;
+        instances[index].tintEmission = (float4)(tint, emission);
+        instances[index].primitiveId = recipe->primitiveId; // Sphere or TorusKnot
+        instances[index].materialBand = band % recipe->materialBandCount;
+        instances[index].flags = 1u; // 4D projection active
+        instances[index].sourceIndex = sourceIndex;
+    } else {
+        // Strut / Polychoron connecting edge mode (indices 240..959)
+        const uint strutIdx = index - 240u;
+        const uint kA = strutIdx % 120u;
+        const uint kB = (strutIdx * 7u + 11u) % 120u; // Golden graph permutation
+
+        float4 ptA = epi_e8_vertex_600cell(kA, 1.0f);
+        float4 ptB = epi_e8_vertex_600cell(kB, 1.0f);
+
+        float4 rotA = epi_rotate_so4(ptA, thetaL, thetaR, phiL, phiR);
+        float4 rotB = epi_rotate_so4(ptB, thetaL, thetaR, phiL, phiR);
+
+        const float denomA = fmax(1.0f - kappa * rotA.w, 0.12f);
+        const float denomB = fmax(1.0f - kappa * rotB.w, 0.12f);
+
+        const float3 posA = (float3)(rotA.x, rotA.y, rotA.z) * (1.0f / denomA) * worldScale;
+        const float3 posB = (float3)(rotB.x, rotB.y, rotB.z) * (1.0f / denomB) * worldScale;
+
+        const float3 midpoint = 0.5f * (posA + posB);
+        const float3 dir = posB - posA;
+        const float len = length(dir);
+        const float3 unitDir = (len > 1e-4f) ? (dir / len) : (float3)(0.0f, 1.0f, 0.0f);
+
+        const float4 orientation = epi_world_align_y(unitDir);
+        const float scale = params->output_scale.y * 0.045f;
+
+        const float3 strutTint = (float3)(0.85f, 0.15f, 0.65f); // Quantum deep magenta
+        const float emission = 0.35f + 0.35f * sin(evolution * 2.0f + convert_float(strutIdx) * 0.02f);
+
+        instances[index].positionScale = (float4)(midpoint, scale);
+        instances[index].orientation = orientation;
+        instances[index].tintEmission = (float4)(strutTint, emission);
+        instances[index].primitiveId = 2u; // Cylinder
+        instances[index].materialBand = 2u % recipe->materialBandCount;
+        instances[index].flags = 1u;
+        instances[index].sourceIndex = sourceIndex;
+    }
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 960u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_lie_e8_gosset_lattice(index, params, frame, recipe, output->instances);
+}
+#endif

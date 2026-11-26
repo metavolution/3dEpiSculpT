@@ -1,0 +1,256 @@
+// -----------------------------------------------------------------------------
+// Educational Annotation: GPU-NATIVE 3D VOLUMETRIC FIELD COUPLER KERNEL
+// -----------------------------------------------------------------------------
+// Realizes Pillar 2 of the Next-Generation Procedural World Architecture:
+// In-place GPU coupling between persistent 3D volumetric memory (`VolumetricVoxelGpu`)
+// and procedural world instances (`WorldSnapshotGpu`).
+//
+// Chained directly on the in-order OpenCL command queue immediately after
+// `generate_world_instances` and BEFORE signaling the Vulkan external semaphore,
+// eliminating 1.5 MiB PCIe readback/re-upload roundtrips while maintaining
+// 100% mathematical parity with `SculptureVolumetricFieldCoupler::coupleInstances`.
+// -----------------------------------------------------------------------------
+
+#ifndef EPI_SCULPT_WORLD_VOLUMETRIC_COUPLER_CLH
+#define EPI_SCULPT_WORLD_VOLUMETRIC_COUPLER_CLH
+
+#include "SculptureWorldGpuAbi.clh"
+
+typedef struct __attribute__((aligned(16))) VolumetricVoxelCouplerGpu {
+    float4 colorDensity;    // xyz = Color (RGB/OKLCH), w = Density [0..1]
+    float4 velocityEnergy;  // xyz = Flow vector,       w = Accumulated orbit energy
+} VolumetricVoxelCouplerGpu;
+
+typedef struct __attribute__((aligned(16))) VolumetricFieldDescriptorCouplerGpu {
+    uint4  identity;            // x=version, y=byteSize, z=width, w=height
+    uint4  extentCadence;       // x=depth, y=resTier, z=cadence, w=flags
+    float4 worldMinimum;        // xyz=worldMin, w=decayFactor
+    float4 worldMaximum;        // xyz=worldMax, w=seedAlpha
+    float4 transformParameters; // x=time, y=deltaSeconds, z=latentW, w=rotorAlpha
+} VolumetricFieldDescriptorCouplerGpu;
+
+typedef struct __attribute__((aligned(16))) VolumetricCouplerConfigGpu {
+    uint4  identityAndFlags; // x=version, y=byteSize, z=flags, w=reserved
+    float4 dynamicsParams;   // x=advectionRate, y=buoyancyStrength, z=vorticitySpinRate, w=energyEmissionGain
+    float4 materialParams;   // x=colorCouplingWeight, y=roughnessGain, z=vacancyDensityThreshold, w=worldBoundingRadius
+    float4 timingAndProbe;   // x=deltaSeconds, y=simTime, z=gradientProbeEpsilon, w=reserved
+} VolumetricCouplerConfigGpu;
+
+#define EPI_COUPLER_FLAG_ENABLE_COUPLING         (1u << 0u)
+#define EPI_COUPLER_FLAG_ENABLE_ADVECTION        (1u << 1u)
+#define EPI_COUPLER_FLAG_ENABLE_DENSITY_BUOYANCY (1u << 2u)
+#define EPI_COUPLER_FLAG_ENABLE_VORTICITY_SPIN   (1u << 3u)
+#define EPI_COUPLER_FLAG_ENABLE_ENERGY_MOD       (1u << 4u)
+#define EPI_COUPLER_FLAG_ENABLE_COLOR_COUPLING   (1u << 5u)
+#define EPI_COUPLER_FLAG_ENABLE_PBR_TURBULENCE   (1u << 6u)
+#define EPI_COUPLER_FLAG_ENABLE_VACANCY_CULLING  (1u << 7u)
+#define EPI_COUPLER_FLAG_CLAMP_TO_WORLD_BOUNDS   (1u << 8u)
+#define EPI_COUPLER_FLAG_ENABLE_TOROIDAL_WRAP    (1u << 9u)
+
+inline uint epi_coupler_voxel_index(uint x, uint y, uint z, uint width, uint height) {
+    return x + width * (y + height * z);
+}
+
+inline VolumetricVoxelCouplerGpu epi_coupler_sample_trilinear(
+    __global const VolumetricVoxelCouplerGpu* volume,
+    __constant const VolumetricFieldDescriptorCouplerGpu* desc,
+    float3 worldPos
+) {
+    const uint width  = max(1u, desc->identity.z);
+    const uint height = max(1u, desc->identity.w);
+    const uint depth  = max(1u, desc->extentCadence.x);
+    const bool torusWrap = (desc->extentCadence.w & (1u << 1u)) != 0u;
+
+    const float3 worldMin = desc->worldMinimum.xyz;
+    const float3 worldMax = desc->worldMaximum.xyz;
+    const float3 span = fmax(worldMax - worldMin, (float3)(1.0e-4f));
+
+    // Normalize worldPos into [-1, 1]^3
+    const float3 pNorm = ((worldPos - worldMin) / span) * 2.0f - 1.0f;
+
+    const float3 gridPos = (pNorm * 0.5f + 0.5f) * (float3)(
+        convert_float(width - 1u),
+        convert_float(height - 1u),
+        convert_float(depth - 1u)
+    );
+
+    const float3 f = floor(gridPos);
+    const float3 frac = gridPos - f;
+
+    int3 i0 = convert_int3(f);
+    int3 i1 = i0 + (int3)(1);
+
+    if (torusWrap) {
+        i0.x = (i0.x % (int)width  + (int)width)  % (int)width;
+        i0.y = (i0.y % (int)height + (int)height) % (int)height;
+        i0.z = (i0.z % (int)depth  + (int)depth)  % (int)depth;
+
+        i1.x = (i1.x % (int)width  + (int)width)  % (int)width;
+        i1.y = (i1.y % (int)height + (int)height) % (int)height;
+        i1.z = (i1.z % (int)depth  + (int)depth)  % (int)depth;
+    } else {
+        i0 = clamp(i0, (int3)(0), (int3)((int)width - 1, (int)height - 1, (int)depth - 1));
+        i1 = clamp(i1, (int3)(0), (int3)((int)width - 1, (int)height - 1, (int)depth - 1));
+    }
+
+    const VolumetricVoxelCouplerGpu c000 = volume[epi_coupler_voxel_index((uint)i0.x, (uint)i0.y, (uint)i0.z, width, height)];
+    const VolumetricVoxelCouplerGpu c100 = volume[epi_coupler_voxel_index((uint)i1.x, (uint)i0.y, (uint)i0.z, width, height)];
+    const VolumetricVoxelCouplerGpu c010 = volume[epi_coupler_voxel_index((uint)i0.x, (uint)i1.y, (uint)i0.z, width, height)];
+    const VolumetricVoxelCouplerGpu c110 = volume[epi_coupler_voxel_index((uint)i1.x, (uint)i1.y, (uint)i0.z, width, height)];
+    const VolumetricVoxelCouplerGpu c001 = volume[epi_coupler_voxel_index((uint)i0.x, (uint)i0.y, (uint)i1.z, width, height)];
+    const VolumetricVoxelCouplerGpu c101 = volume[epi_coupler_voxel_index((uint)i1.x, (uint)i0.y, (uint)i1.z, width, height)];
+    const VolumetricVoxelCouplerGpu c011 = volume[epi_coupler_voxel_index((uint)i0.x, (uint)i1.y, (uint)i1.z, width, height)];
+    const VolumetricVoxelCouplerGpu c111 = volume[epi_coupler_voxel_index((uint)i1.x, (uint)i1.y, (uint)i1.z, width, height)];
+
+    const float4 cd00 = mix(c000.colorDensity, c100.colorDensity, frac.x);
+    const float4 cd10 = mix(c010.colorDensity, c110.colorDensity, frac.x);
+    const float4 cd01 = mix(c001.colorDensity, c101.colorDensity, frac.x);
+    const float4 cd11 = mix(c011.colorDensity, c111.colorDensity, frac.x);
+    const float4 cd0  = mix(cd00, cd10, frac.y);
+    const float4 cd1  = mix(cd01, cd11, frac.y);
+
+    const float4 ve00 = mix(c000.velocityEnergy, c100.velocityEnergy, frac.x);
+    const float4 ve10 = mix(c010.velocityEnergy, c110.velocityEnergy, frac.x);
+    const float4 ve01 = mix(c001.velocityEnergy, c101.velocityEnergy, frac.x);
+    const float4 ve11 = mix(c011.velocityEnergy, c111.velocityEnergy, frac.x);
+    const float4 ve0  = mix(ve00, ve10, frac.y);
+    const float4 ve1  = mix(ve01, ve11, frac.y);
+
+    VolumetricVoxelCouplerGpu out;
+    out.colorDensity   = mix(cd0, cd1, frac.z);
+    out.velocityEnergy = mix(ve0, ve1, frac.z);
+    return out;
+}
+
+inline float4 epi_coupler_quat_mul(float4 q1, float4 q2) {
+    return (float4)(
+        q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+        q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+        q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
+        q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
+    );
+}
+
+inline float epi_coupler_wrap_coord(float val, float radius) {
+    const float span = 2.0f * radius;
+    if (span <= 1.0e-4f) return 0.0f;
+    float offset = fmod(val + radius, span);
+    if (offset < 0.0f) offset += span;
+    return offset - radius;
+}
+
+__kernel void couple_world_volumetric_field(
+    __global WorldSnapshotGpu* snapshot,
+    __global const VolumetricVoxelCouplerGpu* volume,
+    __constant const VolumetricFieldDescriptorCouplerGpu* volumeDesc,
+    __constant const VolumetricCouplerConfigGpu* couplerCfg
+) {
+    const uint index = get_global_id(0);
+    if (snapshot == 0 || volume == 0 || volumeDesc == 0 || couplerCfg == 0) return;
+
+    const uint flags = couplerCfg->identityAndFlags.z;
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_COUPLING) == 0u) return;
+
+    const uint activeCount = min(snapshot->frame.activeInstanceCount, (uint)EPI_SCULPT_WORLD_MAX_INSTANCE_COUNT);
+    if (index >= activeCount) return;
+
+    WorldInstanceGpu inst = snapshot->instances[index];
+    float3 pos = inst.positionScale.xyz;
+
+    // 1. Continuous Trilinear Voxel Sampling
+    const VolumetricVoxelCouplerGpu voxel = epi_coupler_sample_trilinear(volume, volumeDesc, pos);
+    const float rho = clamp(voxel.colorDensity.w, 0.0f, 1.0f);
+    const float3 vel = voxel.velocityEnergy.xyz;
+    const float energy = fmax(0.0f, voxel.velocityEnergy.w);
+
+    const float vacancyThreshold = couplerCfg->materialParams.z;
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_VACANCY_CULLING) != 0u && rho < vacancyThreshold) {
+        inst.positionScale.w = 0.0f;
+        snapshot->instances[index] = inst;
+        return;
+    }
+
+    const float dt = clamp(couplerCfg->timingAndProbe.x, 0.0001f, 0.1f);
+    const float eps = fmax(couplerCfg->timingAndProbe.z, 1.0e-4f);
+    const float inv2Eps = 0.5f / eps;
+
+    // 2. Physical Flow Advection
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_ADVECTION) != 0u) {
+        pos += vel * (dt * couplerCfg->dynamicsParams.x);
+    }
+
+    // 3. Density-Gradient Buoyancy & Repulsion Force
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_DENSITY_BUOYANCY) != 0u) {
+        const float dX = (epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(eps, 0.0f, 0.0f)).colorDensity.w -
+                          epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(eps, 0.0f, 0.0f)).colorDensity.w) * inv2Eps;
+        const float dY = (epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(0.0f, eps, 0.0f)).colorDensity.w -
+                          epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(0.0f, eps, 0.0f)).colorDensity.w) * inv2Eps;
+        const float dZ = (epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(0.0f, 0.0f, eps)).colorDensity.w -
+                          epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(0.0f, 0.0f, eps)).colorDensity.w) * inv2Eps;
+        pos += (float3)(dX, dY, dZ) * (dt * couplerCfg->dynamicsParams.y);
+    }
+
+    // 4. Spatial Boundary Handling
+    const float R = fmax(0.1f, couplerCfg->materialParams.w);
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_TOROIDAL_WRAP) != 0u) {
+        pos.x = epi_coupler_wrap_coord(pos.x, R);
+        pos.y = epi_coupler_wrap_coord(pos.y, R);
+        pos.z = epi_coupler_wrap_coord(pos.z, R);
+    } else if ((flags & EPI_COUPLER_FLAG_CLAMP_TO_WORLD_BOUNDS) != 0u) {
+        pos = clamp(pos, (float3)(-R), (float3)(R));
+    }
+    inst.positionScale.xyz = pos;
+
+    // 5. Fluid Vorticity & Eddy Angular Momentum (Quaternion Spin)
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_VORTICITY_SPIN) != 0u) {
+        const float3 uXp = epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(eps, 0.0f, 0.0f)).velocityEnergy.xyz;
+        const float3 uXm = epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(eps, 0.0f, 0.0f)).velocityEnergy.xyz;
+        const float3 uYp = epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(0.0f, eps, 0.0f)).velocityEnergy.xyz;
+        const float3 uYm = epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(0.0f, eps, 0.0f)).velocityEnergy.xyz;
+        const float3 uZp = epi_coupler_sample_trilinear(volume, volumeDesc, pos + (float3)(0.0f, 0.0f, eps)).velocityEnergy.xyz;
+        const float3 uZm = epi_coupler_sample_trilinear(volume, volumeDesc, pos - (float3)(0.0f, 0.0f, eps)).velocityEnergy.xyz;
+
+        const float3 omega = (float3)(
+            (uYp.z - uYm.z) - (uZp.y - uZm.y),
+            (uZp.x - uZm.x) - (uXp.z - uXm.z),
+            (uXp.y - uXm.y) - (uYp.x - uYm.x)
+        ) * inv2Eps;
+
+        const float omegaMag = length(omega);
+        if (omegaMag > 1.0e-4f) {
+            const float halfAngle = 0.5f * omegaMag * dt * couplerCfg->dynamicsParams.z;
+            const float3 axis = omega / omegaMag;
+            const float4 deltaQ = (float4)(axis * sin(halfAngle), cos(halfAngle));
+            float4 nextQ = epi_coupler_quat_mul(deltaQ, inst.orientation);
+            const float qLen = length(nextQ);
+            inst.orientation = (qLen > 1.0e-4f) ? (nextQ / qLen) : (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+        }
+    }
+
+    // 6. Color & Orbit Energy Emission Coupling
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_COLOR_COUPLING) != 0u) {
+        const float blend = clamp(couplerCfg->materialParams.x * (0.25f + 0.75f * rho), 0.0f, 1.0f);
+        inst.tintEmission.xyz = mix(inst.tintEmission.xyz, voxel.colorDensity.xyz, blend);
+    }
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_ENERGY_MOD) != 0u) {
+        inst.tintEmission.w *= (1.0f + couplerCfg->dynamicsParams.w * energy);
+    }
+
+    // 7. PBR Roughness & Turbulence Coupling
+    if ((flags & EPI_COUPLER_FLAG_ENABLE_PBR_TURBULENCE) != 0u) {
+        const float kineticEnergy = 0.5f * dot(vel, vel);
+        const float baseRoughness = (inst.pbrOverride.y >= 0.0f) ? inst.pbrOverride.y : 0.45f;
+        inst.pbrOverride.y = clamp(
+            baseRoughness + couplerCfg->materialParams.y * kineticEnergy * (0.5f + 0.5f * rho),
+            0.04f,
+            0.96f
+        );
+        if (inst.pbrOverride.x < 0.0f) {
+            inst.pbrOverride.x = 0.50f;
+        }
+    }
+
+    snapshot->instances[index] = inst;
+}
+
+#endif // EPI_SCULPT_WORLD_VOLUMETRIC_COUPLER_CLH

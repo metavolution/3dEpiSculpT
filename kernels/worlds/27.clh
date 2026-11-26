@@ -1,0 +1,144 @@
+// -----------------------------------------------------------------------------
+// Component: 4D Hyperbolic Icosahedral Honeycomb Horosphere (Generator ID: 27)
+// -----------------------------------------------------------------------------
+
+inline float3 epi_ico_vertex(uint k) {
+    const float phi = 1.61803398875f;
+    const float norm = 0.52573111211f; // 1 / sqrt(1 + phi^2)
+    const float phiNorm = phi * norm;  // phi / sqrt(1 + phi^2) = 0.85065080835f
+
+    const uint group = (k % 12u) / 4u;
+    const uint signIdx = (k % 12u) % 4u;
+    const float s1 = (signIdx & 1u) ? phiNorm : -phiNorm;
+    const float s2 = (signIdx & 2u) ? norm : -norm;
+
+    if (group == 0u) return (float3)(s2, s1, 0.0f);
+    if (group == 1u) return (float3)(0.0f, s2, s1);
+    return (float3)(s1, 0.0f, s2);
+}
+
+inline void epi_world_write_hyperbolic_honeycomb_horosphere_4d(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 1024.0f
+            / convert_float(activeCount)),
+        1023u);
+
+    const uint shellCount = 32u;
+    const uint pointsPerShell = 32u;
+    const uint shellIdx = sourceIndex / pointsPerShell;
+    const uint ptIdx = sourceIndex % pointsPerShell;
+
+    const float shellFrac = (convert_float(shellIdx) + 1.0f) / (convert_float(shellCount) + 1.0f);
+    const float ptFrac = convert_float(ptIdx) / convert_float(pointsPerShell);
+
+    const float evolution = frame->time * (0.22f + 0.12f * fabs(params->dynamics_seed.x));
+    const float tau = 6.28318530718f;
+
+    // Hyperbolic horosphere coordinates
+    const float rho = tanh(shellFrac * 2.6f);
+    const float horoScale = exp(-0.45f * shellFrac * (1.0f + params->topologyBlend));
+
+    // Icosahedral basis combined with azimuthal horosphere twist
+    const float3 icoDir = epi_ico_vertex(ptIdx);
+    const float twist = ptFrac * tau + evolution * 0.4f + shellFrac * 1.5f;
+    const float cosTw = cos(twist);
+    const float sinTw = sin(twist);
+
+    // Twisted horospherical position in H^3
+    const float3 dir = normalize((float3)(
+        icoDir.x * cosTw - icoDir.z * sinTw,
+        icoDir.y,
+        icoDir.x * sinTw + icoDir.z * cosTw
+    ));
+
+    // Embed in 4D Minkowski hyperboloid / S^3 representation
+    const float sinhR = sinh(rho * 1.8f);
+    const float coshR = cosh(rho * 1.8f);
+    const float4 pt4D = (float4)(
+        dir.x * sinhR * horoScale,
+        dir.y * sinhR * horoScale,
+        dir.z * sinhR * horoScale,
+        coshR * 0.75f - 0.25f * cos(evolution + shellFrac * tau)
+    );
+
+    // SO(4) Left-Right rotor rotation
+    const float thetaL = params->rotor_alpha + evolution * 0.32f;
+    const float thetaR = params->rotor_beta + evolution * 0.24f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    float4 rot_p4 = epi_rotate_so4(pt4D, thetaL, thetaR, phiL, phiR);
+
+    // Conformal projection: S^3 -> R^3
+    const float kappa = 0.58f * clamp(params->topologyBlend, 0.2f, 0.95f);
+    const float denom = fmax(1.3f - kappa * rot_p4.w, 0.18f);
+    const float invDenom = 1.0f / denom;
+
+    const float worldScale = 4.2f * params->output_scale.x;
+    const float3 pos3 = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    // Normal / alignment
+    const float3 normal = normalize((float3)(rot_p4.x, rot_p4.y + 0.1f, rot_p4.z) + (float3)(0.001f));
+    const float4 orientation = epi_world_align_y(normal);
+
+    const float pulse = 0.5f + 0.5f * sin(evolution * 3.0f + convert_float(ptIdx) * 0.25f);
+    const float scale = params->output_scale.y * 0.082f * (0.8f + 0.25f * pulse);
+
+    uint band = 0u;
+    if (shellIdx < 10u) {
+        band = 1u; // Core amber
+    } else if (shellIdx > 22u) {
+        band = 2u; // Horosphere boundary violet
+    }
+
+    const float3 tint = (band == 1u)
+        ? (float3)(0.98f, 0.72f, 0.18f)
+        : ((band == 2u)
+            ? (float3)(0.76f, 0.22f, 0.95f)
+            : (float3)(0.12f, 0.88f, 0.82f));
+
+    const float emission = (band == 1u) ? (0.45f + 0.35f * pulse) : (0.2f + 0.3f * pulse);
+
+    instances[index].positionScale = (float4)(pos3, scale);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = band % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = sourceIndex;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_hyperbolic_honeycomb_horosphere_4d(index, params, frame, recipe, output->instances);
+}
+#endif

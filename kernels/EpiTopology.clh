@@ -1,0 +1,268 @@
+// Educational Annotation: Topological Morphisms
+#ifndef EPI_TOPOLOGY_CLH
+#define EPI_TOPOLOGY_CLH
+#include "EpiLearnMode.clh"
+inline float2 epi_apply_innerA(float2 z) {
+#ifdef EPI_INNER_A_CODE
+    EPI_INNER_A_CODE
+#else
+    return z;
+#endif
+}
+
+inline float2 epi_apply_innerB(float2 z) {
+#ifdef EPI_INNER_B_CODE
+    EPI_INNER_B_CODE
+#else
+    return z;
+#endif
+}
+
+inline float2 epi_evaluate_homotopy(float2 zA, float2 zB, float2 zOrig, float t) {
+    float clamped_t = clamp(t, 0.0f, 1.0f);
+    float eps = 4.0f * clamped_t * (1.0f - clamped_t);
+    float2 linear_mix = mix(zA, zB, clamped_t);
+    if (eps <= 1e-4f) return linear_mix;
+
+    float cross_im = zA.x * zB.y - zA.y * zB.x;
+    float dot_re = zA.x * zB.x + zA.y * zB.y;
+    float magA = length(zA);
+    float magB = length(zB);
+    float avg_mag = 0.5f * (magA + magB);
+
+    float phase_sign = (cross_im >= 0.0f) ? 1.0f : -1.0f;
+    float phase_diff = (fabs(cross_im) < 1e-6f && dot_re < 0.0f) ? EPI_SCULPT_PI : atan2(fabs(cross_im), dot_re);
+    float regularizer_scale = 0.5f * eps * sin(phase_diff * 0.5f) * avg_mag;
+
+    float z_orig_mag = fmax(length(zOrig), 1e-4f);
+    float2 rot_z = (float2)(-zOrig.y / z_orig_mag, zOrig.x / z_orig_mag);
+
+    float2 regularized = linear_mix + (float2)(phase_sign * regularizer_scale * rot_z.x,
+                                               phase_sign * regularizer_scale * rot_z.y);
+
+    float max_mag = fmax(magA, magB) * (1.0f + 0.25f * eps);
+    float reg_mag = length(regularized);
+    if (reg_mag > max_mag && reg_mag > 1e-5f) {
+        regularized *= (max_mag / reg_mag);
+    }
+    return regularized;
+}
+
+inline float2 epi_transform_plane(float2 z, __constant const SculptureProgramParamsGpu* params, float phase) {
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_TRANSFORM)) return z;
+    float2 drift = (float2)(cos(phase), sin(phase));
+    z = epi_apply_affine(epi_complex_mul(drift, z), params->pre_affine);
+    float2 zA = epi_apply_innerA(z);
+    float2 zB = epi_apply_innerB(z);
+    z = epi_evaluate_homotopy(zA, zB, z, params->topologyBlend);
+    return epi_apply_affine(z, params->post_affine);
+}
+
+inline float4 epi_lift_four_dimensions(float4 value, __constant const SculptureProgramParamsGpu* params, float time, uint iteration) {
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_TRANSFORM)) return value;
+    float amp = params->pulse_material.y;
+    float audio_bass = params->audio_spectrum.x * amp;
+    float audio_mid = params->audio_spectrum.y * amp;
+    float drift = params->dynamics_seed.x * time + 0.11f * convert_float(iteration) + audio_mid * 0.6f;
+    float w = params->latent_w + audio_bass * 1.2f; // Bass physically drives the 4th spatial dimension
+    
+    // SO(4) Dual-Isoclinic Rotation (Left + Right commuting isoclinic angles)
+    float alpha = params->rotor_alpha + drift + w;
+    float beta = params->rotor_beta + drift * 0.61803398875f - w * 0.5f;
+    float thetaL = alpha + beta;
+    float thetaR = alpha - beta;
+    
+    float4 r4 = epi_rotate_so4(value, thetaL, thetaR, 0.0f, 0.0f);
+    if (fabs(params->rotor_theta_4d) > 1e-5f) {
+        float sinT, cosT;
+        sinT = sincos(params->rotor_theta_4d, &cosT);
+        const float zw_z = r4.z * cosT - r4.w * sinT;
+        const float zw_w = r4.z * sinT + r4.w * cosT;
+        r4.z = zw_z;
+        r4.w = zw_w;
+    }
+
+    float2 xy = epi_transform_plane(r4.xy, params, drift + w);
+    float2 xz = epi_transform_plane((float2)(r4.x, r4.z), params, drift + 1.0f * EPI_SCULPT_PI / 3.0f + w * 1.5f);
+    float2 xw = epi_transform_plane((float2)(r4.x, r4.w), params, drift + 2.0f * EPI_SCULPT_PI / 3.0f - w);
+    float2 yz = epi_transform_plane(r4.yz, params, drift + 3.0f * EPI_SCULPT_PI / 3.0f + w * 0.5f);
+    float2 yw = epi_transform_plane((float2)(r4.y, r4.w), params, drift + 4.0f * EPI_SCULPT_PI / 3.0f - w * 1.5f);
+    float2 zw = epi_transform_plane(r4.zw, params, drift + 5.0f * EPI_SCULPT_PI / 3.0f + w * 2.0f);
+    return (float4)((xy.x + xz.x + xw.x) / 3.0f, (xy.y + yz.x + yw.x) / 3.0f, (xz.y + yz.y + zw.x) / 3.0f, (xw.y + yw.y + zw.y) / 3.0f);
+}
+
+inline float3 epi_lift_three_planes(float3 value, __constant const SculptureProgramParamsGpu* params, float time, uint iteration) {
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_TRANSFORM)) return value;
+    float amp = params->pulse_material.y;
+    float audio_bass = params->audio_spectrum.x * amp;
+    float audio_mid = params->audio_spectrum.y * amp;
+    float drift = params->dynamics_seed.x * time + 0.11f * convert_float(iteration) + audio_mid * 0.6f;
+    float w = params->latent_w + audio_bass * 1.2f; // Bass physically drives the 4th spatial dimension
+    float2 xy = epi_transform_plane(value.xy, params, drift + w);
+    float2 yz = epi_transform_plane(value.yz, params, drift + 2.0f * EPI_SCULPT_PI / 3.0f - w * 0.5f);
+    float2 zx = epi_transform_plane((float2)(value.z, value.x), params, drift + 4.0f * EPI_SCULPT_PI / 3.0f + w * 2.0f);
+    return (float3)(0.5f * (xy.x + zx.y), 0.5f * (xy.y + yz.x), 0.5f * (yz.y + zx.x));
+}
+
+#include "EpiReduction.clh"
+
+#include "Epi120Cell.clh"
+#include "EpiE8Lattice.clh"
+
+inline float3 epi_seed_point_shape(uint index, uint sample_count, float time, uint output_mode, uint scale_factor) {
+    uint scale = (scale_factor == 0) ? 1u : scale_factor;
+    if (output_mode == 1) {
+        uint mod_index = index % 125000u;
+        uint x_f = mod_index % 50u; uint y_f = (mod_index / 50u) % 50u; uint z_f = mod_index / 2500u;
+        uint x = (x_f / scale) * scale; uint y = (y_f / scale) * scale; uint z = (z_f / scale) * scale;
+        
+        uint frame_hash = convert_uint(time * 60.0f) % 64u;
+        float jx = convert_float((index * 137u + frame_hash * 73u) % 1024u) / 1024.0f - 0.5f;
+        float jy = convert_float((index * 313u + frame_hash * 191u) % 1024u) / 1024.0f - 0.5f;
+        float jz = convert_float((index * 719u + frame_hash * 353u) % 1024u) / 1024.0f - 0.5f;
+        
+        return (float3)(((convert_float(x) + jx) / 49.0f * 2.0f - 1.0f) * 1.5f, 
+                        ((convert_float(y) + jy) / 49.0f * 2.0f - 1.0f) * 1.5f, 
+                        ((convert_float(z) + jz) / 49.0f * 2.0f - 1.0f) * 1.5f);
+    } else if (output_mode == 2) {
+        uint u_idx = ((index % 128u) / scale) * scale; 
+        uint v_idx = ((index / 128u) / scale) * scale;
+        float u_val = convert_float(u_idx) / 127.0f; float v_val = convert_float(v_idx) / 127.0f;
+        float th = 2.0f * EPI_SCULPT_PI * u_val; float ph = 2.0f * EPI_SCULPT_PI * v_val;
+        return (float3)((1.0f + 0.35f * cos(ph)) * cos(th), 0.35f * sin(ph), (1.0f + 0.35f * cos(ph)) * sin(th));
+    } else if (output_mode == 3) {
+        float gold = (1.0f + sqrt(5.0f)) / 2.0f; float i_f = convert_float((index / scale) * scale); float n_f = convert_float(sample_count);
+        float y = 1.0f - (i_f / (n_f - 1.0f)) * 2.0f; float r = sqrt(1.0f - y * y); float th = 2.0f * EPI_SCULPT_PI * i_f / gold;
+        return 1.1f * (float3)(r * cos(th), y, r * sin(th));
+    } else if (output_mode == 4) {
+        // 4D Clifford Torus & Hopf Soliton projection from S^3
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 3.0f + 0.05f * time;
+        float ph = 2.0f * EPI_SCULPT_PI * u_val * 2.0f + 0.03f * time;
+        float4 q = 0.70710678f * (float4)(cos(th), sin(th), cos(ph), sin(ph));
+        float denom = fmax(1.0f - q.w * 0.5f, 0.2f);
+        return (1.35f / denom) * (float3)(q.x, q.y, q.z);
+    } else if (output_mode == 5) {
+        // Hyperbolic Pseudosphere (Tractricoid) with constant negative Gaussian curvature
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 4.0f + 0.02f * time;
+        float v_val = clamp(u_val, 0.05f, 0.95f) * 3.0f - 1.5f;
+        float sech_v = 1.0f / cosh(v_val);
+        float tanh_v = tanh(v_val);
+        return (float3)(sech_v * cos(th) * 1.2f, (v_val - tanh_v) * 0.8f, sech_v * sin(th) * 1.2f);
+    } else if (output_mode == 6) {
+        // Exponential Logarithmic Starburst Cascade
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 6.0f + 0.04f * time;
+        float r = 0.25f + 0.85f * sqrt(u_val);
+        float branch = sin(th * 5.0f);
+        return (float3)(r * cos(th), 0.35f * branch * r, r * sin(th));
+    } else if (output_mode == 7) {
+        // Exact-polytope <-> quantum-helix projection morph (120-cell)
+        uint poly_idx = ((index / scale) * scale) % 600u;
+        float4 poly = kHecatonicosachoron120[poly_idx];
+        
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 5.0f + 0.08f * time;
+        float ph = 2.0f * EPI_SCULPT_PI * u_val * 3.0f + 0.04f * time;
+        float4 helix = 0.70710678f * (float4)(cos(th), sin(th), cos(ph), sin(ph));
+        
+        float morph = 0.5f + 0.5f * sin(time * 0.25f);
+        float4 q = mix(poly, helix, morph);
+        float denom = fmax(1.0f - q.w * 0.5f, 0.2f);
+        return (1.35f / denom) * (float3)(q.x, q.y, q.z);
+    } else if (output_mode == 8) {
+        // Neural Synapse / Axon Branching Manifold
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float t = time * 0.1f;
+        
+        // Base Lissajous for the main axon trunk
+        float trunk_x = sin(u_val * EPI_SCULPT_PI * 4.0f + t * 2.0f);
+        float trunk_y = sin(u_val * EPI_SCULPT_PI * 6.0f + t * 1.5f);
+        float trunk_z = cos(u_val * EPI_SCULPT_PI * 5.0f + t * 2.5f);
+        
+        // High frequency branching logic
+        float branch_freq = 40.0f;
+        float branch_amp = 0.4f * (1.0f - cos(u_val * EPI_SCULPT_PI * 8.0f));
+        float branch_x = sin(u_val * EPI_SCULPT_PI * branch_freq + t * 5.0f) * cos(u_val * EPI_SCULPT_PI * 13.0f);
+        float branch_y = cos(u_val * EPI_SCULPT_PI * branch_freq * 1.1f + t * 4.0f) * sin(u_val * EPI_SCULPT_PI * 17.0f);
+        float branch_z = sin(u_val * EPI_SCULPT_PI * branch_freq * 0.9f + t * 6.0f) * cos(u_val * EPI_SCULPT_PI * 19.0f);
+        
+        // Pulsing synaptic bulb at the tips
+        float bulb_mask = pow(sin(u_val * EPI_SCULPT_PI * branch_freq), 8.0f);
+        float bulb_radius = 0.2f * bulb_mask * (1.0f + 0.5f * sin(time * 10.0f));
+        
+        float3 pos = (float3)(trunk_x, trunk_y, trunk_z) + branch_amp * (float3)(branch_x, branch_y, branch_z);
+        return 1.2f * pos + bulb_radius * (float3)(sin(time*20.0f), cos(time*20.0f), sin(time*20.0f+1.0f));
+    } else if (output_mode == 9) {
+        // E8 Root Lattice to Calabi-Yau Quintic Threefold Morph (240 vertices)
+        uint poly_idx = ((index / scale) * scale) % 240u;
+        float4 poly = kLieE8Coxeter[poly_idx];
+        
+        // Target Calabi-Yau
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 7.0f + 0.1f * time;
+        float r = 0.85f * cos(5.0f * u_val * EPI_SCULPT_PI + time * 0.2f);
+        float4 cy = (float4)(r * cos(th), r * sin(th), 0.6f * cos(3.0f * th), 0.6f * sin(3.0f * th));
+        
+        float morph = 0.5f + 0.5f * sin(time * 0.15f);
+        float4 q = mix(poly, cy, morph);
+        float denom = fmax(1.0f - q.w * 0.5f, 0.15f);
+        return (1.2f / denom) * (float3)(q.x, q.y, q.z);
+    } else if (output_mode == 10) {
+        // Twistor Kerr-Robinson Null Congruence Ribbon (S3 -> R3)
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float eta = 0.5f * acos(clamp(1.0f - 2.0f * u_val, -1.0f, 1.0f));
+        float psi = u_val * 16.0f * EPI_SCULPT_PI + 0.08f * time;
+        float4 ptS3 = (float4)(cos(eta) * cos(psi + u_val * 6.28f), cos(eta) * sin(psi + u_val * 6.28f), sin(eta) * cos(psi), sin(eta) * sin(psi));
+        float denom = fmax(1.0001f - ptS3.w, 0.001f);
+        return (1.25f / denom) * (float3)(ptS3.x, ptS3.y, ptS3.z);
+    } else if (output_mode == 11) {
+        // Kuramoto Phase-Synchronized Dynamic Hypersurface Lattice
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 5.0f + 0.05f * time;
+        float r = 0.8f + 0.25f * sin(th * 3.0f + 0.35f * cos(time * 2.0f));
+        float w_sync = 0.35f * sin(th * 2.0f - time * 1.5f);
+        return (float3)(r * cos(th), w_sync, r * sin(th));
+    } else if (output_mode == 12) {
+        // Dedekind Modular Eta & Jacobi Conformal Hypermanifold
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 6.0f + 0.03f * time;
+        float q_mod = 0.65f * (1.0f + 0.3f * cos(th * 4.0f));
+        float z_re = q_mod * cos(th);
+        float z_im = q_mod * sin(th);
+        float eta_approx = 0.5f * sin(3.0f * th) * cos(2.0f * th);
+        return (float3)(z_re * 1.3f, eta_approx * 0.7f, z_im * 1.3f);
+    } else if (output_mode == 13) {
+        // Lin-Shu Galactic Density Wave Dispersion Manifold
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float r = 0.2f + 1.1f * sqrt(u_val);
+        float theta_arm = 4.0f * log(fmax(r, 0.1f)) + 0.04f * time;
+        float z_wave = 0.25f * sin(2.0f * theta_arm) * exp(-r * 0.8f);
+        return (float3)(r * cos(theta_arm), z_wave, r * sin(theta_arm));
+    } else if (output_mode == 14) {
+        // Schwarzschild Photon Sphere Conformal Lensing Manifold
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 8.0f + 0.06f * time;
+        float r_sphere = 1.0f / (1.0f + 0.5f * exp(-4.0f * fabs(u_val - 0.5f)));
+        float deflection = 0.35f * sin(th * 2.0f);
+        return (float3)(r_sphere * cos(th), deflection, r_sphere * sin(th));
+    } else if (output_mode == 15) {
+        // Poincare Hyperbolic Vortex Chamber
+        float u_val = convert_float((index / scale) * scale) / convert_float(sample_count);
+        float th = 2.0f * EPI_SCULPT_PI * u_val * 5.0f + 0.05f * time;
+        float r_hyp = tanh(1.5f * u_val);
+        float vortex_z = 0.4f * sin(th * 3.0f) / (1.0f - r_hyp * r_hyp + 0.05f);
+        return (float3)(r_hyp * cos(th) * 1.2f, clamp(vortex_z * 0.25f, -1.0f, 1.0f), r_hyp * sin(th) * 1.2f);
+    } else {
+        float u = convert_float((index / scale) * scale) / convert_float(sample_count); float ph = 2.0f * EPI_SCULPT_PI * u + 0.018f * time; float r = 0.60f + 0.23f * cos(3.0f * ph);
+        return (float3)(r * cos(2.0f * ph), 0.30f * sin(3.0f * ph), r * sin(2.0f * ph));
+    }
+}
+
+inline float3 epi_seed_point(uint index, uint sample_count, float time, __constant const SculptureProgramParamsGpu* params) {
+    float3 pA = epi_seed_point_shape(index, sample_count, time, params->output_mode, params->auxiliary_resolution_scale);
+    float3 pB = epi_seed_point_shape(index, sample_count, time, params->output_modeB, params->auxiliary_resolution_scale);
+    return mix(pA, pB, params->topologyBlend);
+}
+#endif

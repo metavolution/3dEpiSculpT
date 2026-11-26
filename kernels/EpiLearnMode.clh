@@ -1,0 +1,33 @@
+// Canonical six-stage Learn Mode ABI. Keep numeric values aligned with
+// SculptureLearnMode.h: this file is the OpenCL counterpart of the C++ API.
+
+#ifndef EPI_LEARN_MODE_CLH
+#define EPI_LEARN_MODE_CLH
+
+#define EPI_STAGE_TRANSFORM        1u
+#define EPI_STAGE_REDUCE           2u
+#define EPI_STAGE_FEEDBACK_SAMPLE  4u
+#define EPI_STAGE_COLOR            8u
+#define EPI_STAGE_SEED             16u
+#define EPI_STAGE_BLEND            32u
+#define EPI_STAGE_ALL              63u
+
+#define EPI_DIAGNOSTIC_SHIFT       8u
+#define EPI_DIAGNOSTIC_MASK        (15u << EPI_DIAGNOSTIC_SHIFT)
+#define EPI_DIAGNOSTIC_FULL        0u
+#define EPI_DIAGNOSTIC_TRANSFORM   1u
+#define EPI_DIAGNOSTIC_REDUCE      2u
+#define EPI_DIAGNOSTIC_SEED_WINDOW 3u
+#define EPI_DIAGNOSTIC_MATERIAL    4u
+#define EPI_DIAGNOSTIC_ORBIT_ENERGY 5u
+#define EPI_DIAGNOSTIC_ORBIT_TRAP  6u
+
+inline bool epi_stage_enabled(uint stage_mask, uint stage_bit) {
+    return (stage_mask & stage_bit) != 0u;
+}
+
+inline uint epi_diagnostic_stage(uint stage_mask) {
+    return (stage_mask & EPI_DIAGNOSTIC_MASK) >> EPI_DIAGNOSTIC_SHIFT;
+}
+
+#endif // EPI_LEARN_MODE_CLH

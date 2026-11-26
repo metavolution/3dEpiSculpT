@@ -1,0 +1,102 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_CHLADNI_MEMBRANE (Generator ID: 7)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_chladni_membrane(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // 2D/3D Faraday-Chladni Quantum Cymatics Membrane.
+    // Coupled standing wave harmonics: 2304 instanced acoustic pillars over a 64x36 grid.
+    const uint activeCount = epi_world_active_count(recipe, 64u * 36u);
+    const uint columnCount = min(64u, max(1u,
+        (uint)ceil(sqrt(convert_float(activeCount) * (64.0f / 36.0f)))));
+    const uint rowCount = (activeCount + columnCount - 1u) / columnCount;
+    const uint column = index % columnCount;
+    const uint row = index / columnCount;
+
+    const float u = (convert_float(column) + 0.5f) / convert_float(columnCount);
+    const float v = (convert_float(row) + 0.5f) / convert_float(rowCount);
+    const float tempo = 0.45f + 1.25f * fabs(params->dynamics_seed.x);
+    const float phase = frame->time * tempo;
+
+    // Harmonic Chladni 2D nodal wave superposition:
+    const float pi = 3.14159265359f;
+    const float waveA = sin(3.0f * pi * u + phase) * sin(2.0f * pi * v - phase * 0.6f);
+    const float waveB = sin(5.0f * pi * u - phase * 0.4f) * sin(4.0f * pi * v + phase);
+    const float waveC = cos(pi * (u + v) * 4.0f + phase * 0.8f) * 0.35f;
+    const float amplitude = waveA - 0.55f * waveB + waveC * params->topologyBlend;
+    const float energy = clamp(fabs(amplitude), 0.0f, 1.0f);
+
+    // Height and vertical displacement:
+    const float height = params->output_scale.y * (0.05f + 1.85f * energy);
+    const float posX = (u - 0.5f) * 14.0f * params->output_scale.x;
+    const float posY = 0.5f * height;
+    const float posZ = (v - 0.5f) * 8.0f * params->output_scale.x;
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: quiescent nodal lines of absolute rest (|amplitude| < 0.14) where sand settles.
+    // Role 1 = Structure: active vibrating membrane slopes (0.14 <= |amplitude| < 0.65).
+    // Role 2 = Accent: antinodal velocity crests (|amplitude| >= 0.65) erupting with sonic radiance.
+    uint semanticRole = 1u;
+    if (energy < 0.14f) {
+        semanticRole = 0u;
+    } else if (energy > 0.62f) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Color and emission:
+    const float hue = 0.58f + 0.25f * amplitude + params->pulse_material.w * frame->time;
+    float3 tint = epi_world_phase_colour(hue, energy);
+    if (semanticRole == 0u) {
+        // Nodal line of rest: deep basalt matte charcoal
+        tint = mix(tint, (float3)(0.12f, 0.14f, 0.18f), 0.85f);
+    } else if (semanticRole == 1u) {
+        // Membrane slope: electric azure / cyan
+        tint = mix(tint, (float3)(0.15f, 0.65f, 0.98f), 0.65f);
+    } else {
+        // Antinode peak: brilliant luminescent sonic white/amber flare
+        tint = mix(tint, (float3)(1.0f, 0.95f, 0.55f), 0.75f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (0.85f + 1.45f * energy)
+        : ((semanticRole == 1u) ? 0.22f : 0.02f);
+
+    instances[index].positionScale = (float4)(posX, posY, posZ, fmax(0.065f + 0.035f * (1.0f - energy), 0.01f));
+
+    // Anisotropic pillar scaling: stretched vertically proportional to standing wave energy
+    instances[index].axisScale = (float4)(0.85f, 0.35f + 3.2f * energy, 0.85f, 1.0f);
+    instances[index].orientation = (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides:
+    if (semanticRole == 0u) {
+        instances[index].pbrOverride = (float4)(0.15f, 0.85f, 0.0f, 0.0f); // Matte basalt
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.65f, 0.25f, 0.20f, 0.0f); // Semi-metallic slope
+    } else {
+        instances[index].pbrOverride = (float4)(0.95f, 0.08f, 0.0f, 0.0f); // Specular antinode flare
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_chladni_membrane(index, params, frame, recipe, output->instances);
+}
+#endif

@@ -1,0 +1,90 @@
+// -----------------------------------------------------------------------------
+// Educational Annotation: The 6-Stage OpenCL Mathematical Pipeline
+// -----------------------------------------------------------------------------
+// This single evaluation loop generates the entire fractal manifold by routing
+// a point through 6 distinct stages repeatedly (the iteration_count):
+// 
+// 1. LIFT: Promotes the 3D seed into a 4D/6D complex manifold.
+// 2. TRANSFORM: Applies the core non-linear equation (e.g. Sinh, Mandelbox).
+// 3. REDUCE: Collapses the N-dimensional manifold back down to 3D space.
+// 4. MASK: Evaluates a volumetric SDF (the "seed window") to determine density.
+// 5. COLOR: Integrates orbital energy to generate the raw material coordinate.
+// 6. BLEND: Crossfades the transformed point with the original seed based on alpha.
+// -----------------------------------------------------------------------------
+#ifndef EPI_FRACTAL_CLH
+#define EPI_FRACTAL_CLH
+#include "EpiLearnMode.clh"
+inline float epi_evaluate_single_seed_windowA(float3 reduced, float3 seed, float time, __constant const SculptureProgramParamsGpu* params) {
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_SEED)) return 0.0f;
+    float w = fmax(params->dynamics_seed.y, 0.001f);
+    float3 diff = reduced - seed;
+    float dist = length(diff);
+#ifdef EPI_SEED_A_CODE
+    EPI_SEED_A_CODE
+#else
+    return 0.0f;
+#endif
+}
+
+inline float epi_evaluate_single_seed_windowB(float3 reduced, float3 seed, float time, __constant const SculptureProgramParamsGpu* params) {
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_SEED)) return 0.0f;
+    float w = fmax(params->dynamics_seed.y, 0.001f);
+    float3 diff = reduced - seed;
+    float dist = length(diff);
+#ifdef EPI_SEED_B_CODE
+    EPI_SEED_B_CODE
+#else
+    return 0.0f;
+#endif
+}
+
+inline float epi_evaluate_seed_window(float3 reduced, float3 seed, float time, __constant const SculptureProgramParamsGpu* params) {
+    return mix(epi_evaluate_single_seed_windowA(reduced, seed, time, params), epi_evaluate_single_seed_windowB(reduced, seed, time, params), params->topologyBlend);
+}
+
+__attribute__((noinline)) float3 epi_evaluate_fractal_loop(float3 seed, float u, __constant const SculptureProgramParamsGpu* params, __constant const SculptureFrameGpu* frame, float3 prev_feedback, float* out_orbit_energy, float* out_final_seed_weight, float* out_orbit_trap) {
+    float3 feedback = mix(seed, prev_feedback, params->output_scale.z);
+    if (!epi_stage_enabled(params->stageMask, EPI_STAGE_FEEDBACK_SAMPLE) || params->output_scale.w > 0.0f) feedback = seed;
+    *out_final_seed_weight = 0.0f; *out_orbit_energy = 0.0f; *out_orbit_trap = 1000.0f;
+    uint evalStage = epi_diagnostic_stage(params->stageMask);
+    uint iteration_count = clamp(params->feedback_iterations, 1u, 12u);
+    for (uint iteration = 0u; iteration < iteration_count; ++iteration) {
+        float3 reduced;
+        if (params->enable4D) {
+            float4 t4 = epi_lift_four_dimensions((float4)(feedback.x, feedback.y, feedback.z, params->latent_w), params, frame->time, iteration);
+            if (evalStage == EPI_DIAGNOSTIC_TRANSFORM) return t4.xyz;
+            float4 r4 = epi_reduce_domain4(t4, params->reduction_id, params->stageMask);
+            if (params->topologyBlend > 0.0f && params->reduction_id != params->reduction_idB) {
+                float4 r4_b = epi_reduce_domain4(t4, params->reduction_idB, params->stageMask);
+                r4 = mix(r4, r4_b, params->topologyBlend);
+            }
+            float stereoScale = 1.0f / (1.0f + clamp(r4.w * 0.35f, -0.7f, 0.7f));
+            reduced = r4.xyz * stereoScale;
+        } else {
+            float3 transformed = epi_lift_three_planes(feedback, params, frame->time, iteration);
+            if (evalStage == EPI_DIAGNOSTIC_TRANSFORM) return transformed;
+            reduced = epi_reduce_domain(transformed, params->reduction_id, params->stageMask);
+            if (params->topologyBlend > 0.0f && params->reduction_id != params->reduction_idB) {
+                float3 reduced_b = epi_reduce_domain(transformed, params->reduction_idB, params->stageMask);
+                reduced = mix(reduced, reduced_b, params->topologyBlend);
+            }
+        }
+        if (evalStage == EPI_DIAGNOSTIC_REDUCE) return reduced;
+        *out_orbit_energy += length(reduced - feedback) / convert_float(iteration_count);
+        
+        // Hyper-Complex Orbit Trap: tracks proximity to Torus core & Axis plane
+        float r_xy = length(reduced.xy);
+        float trap_torus = fabs(r_xy - 1.0f);
+        float trap_cross = min(fabs(reduced.x), fabs(reduced.y));
+        float current_trap = min(trap_torus, trap_cross);
+        *out_orbit_trap = min(*out_orbit_trap, current_trap);
+
+        *out_final_seed_weight = epi_evaluate_seed_window(reduced, seed, frame->time, params);
+        if (evalStage == EPI_DIAGNOSTIC_SEED_WINDOW) return (float3)(*out_final_seed_weight);
+        float pulse = 1.0f + params->pulse_material.y * sin(2.0f * EPI_SCULPT_PI * (params->pulse_material.x * frame->time + u + 0.17f * convert_float(iteration)));
+        float alpha = clamp(params->dynamics_seed.w + params->dynamics_seed.z * (*out_final_seed_weight) * pulse, 0.0f, 0.95f);
+        feedback = epi_stage_enabled(params->stageMask, EPI_STAGE_BLEND) ? mix(reduced, seed, alpha) : reduced;
+    }
+    return feedback;
+}
+#endif

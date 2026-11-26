@@ -1,0 +1,126 @@
+// -----------------------------------------------------------------------------
+// Component: Dedekind Eta Quartic Soliton Lattice 4D (Generator ID: 25)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_dedekind_eta_quartic_4d(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 1024.0f
+            / convert_float(activeCount)),
+        1023u);
+
+    const uint numSheets = 32u;
+    const uint pointsPerSheet = 32u;
+    const uint sheet = sourceIndex / pointsPerSheet;
+    const uint pt = sourceIndex % pointsPerSheet;
+
+    const float tau = 6.28318530718f;
+    const float u = convert_float(pt) / convert_float(pointsPerSheet);
+    const float v = convert_float(sheet) / convert_float(numSheets);
+
+    const float evolution = frame->time * (0.24f + 0.16f * fabs(params->dynamics_seed.x));
+
+    const float theta1 = u * tau + evolution * 0.4f;
+    const float theta2 = v * tau * 2.0f + evolution * 0.7f;
+
+    const float qMod = 0.55f + 0.35f * cos(4.0f * theta1) * sin(4.0f * theta2);
+    const float r1 = sqrt(fmax(0.1f, 1.0f + 0.4f * sin(2.0f * theta1 + evolution)));
+    const float r2 = sqrt(fmax(0.1f, 1.0f - 0.4f * sin(2.0f * theta1 + evolution)));
+
+    const float4 pt4D = (float4)(
+        r1 * cos(theta1),
+        r1 * sin(theta1),
+        r2 * cos(theta2) * qMod,
+        r2 * sin(theta2) * qMod
+    );
+
+    const float4 tan4D = (float4)(
+        -r1 * sin(theta1),
+         r1 * cos(theta1),
+        -r2 * sin(theta2) * 2.0f * qMod,
+         r2 * cos(theta2) * 2.0f * qMod
+    );
+
+    const float thetaL = params->rotor_alpha + evolution * 0.3f;
+    const float thetaR = params->rotor_beta + evolution * 0.2f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    float4 rot_p4 = epi_rotate_so4(pt4D, thetaL, thetaR, phiL, phiR);
+    float4 rot_t4 = epi_rotate_so4(tan4D, thetaL, thetaR, phiL, phiR);
+
+    const float kappa = 0.52f * clamp(params->topologyBlend, 0.2f, 0.9f);
+    const float denom = fmax(1.5f - kappa * rot_p4.w, 0.25f);
+    const float invDenom = 1.0f / denom;
+
+    const float worldScale = 2.8f * params->output_scale.x;
+    const float3 pos3 = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    float3 tangent3 = ((float3)(rot_t4.x, rot_t4.y, rot_t4.z) * denom
+                      + (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * (kappa * rot_t4.w))
+                      * (invDenom * invDenom);
+    const float tLen = length(tangent3);
+    tangent3 = (tLen > 1e-4f) ? (tangent3 / tLen) : (float3)(0.0f, 1.0f, 0.0f);
+
+    const float4 orientation = epi_world_align_y(tangent3);
+
+    const float pulse = 0.5f + 0.5f * sin(evolution * 2.8f + theta1 * 2.0f);
+    const float scale = params->output_scale.y * 0.075f * (0.85f + 0.25f * pulse);
+
+    uint band = 0u;
+    if (qMod > 0.72f) {
+        band = 1u;
+    } else if (fabs(rot_p4.w) > 0.65f) {
+        band = 2u;
+    }
+
+    const float3 tint = (band == 1u)
+        ? (float3)(0.98f, 0.82f, 0.24f)
+        : ((band == 2u)
+            ? (float3)(0.72f, 0.16f, 0.92f)
+            : (float3)(0.06f, 0.22f, 0.72f));
+
+    const float emission = (band == 1u) ? (0.45f + 0.4f * pulse) : (0.18f + 0.22f * pulse);
+
+    instances[index].positionScale = (float4)(pos3, scale);
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, emission);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = band % recipe->materialBandCount;
+    instances[index].flags = 1u;
+    instances[index].sourceIndex = index;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1024u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_dedekind_eta_quartic_4d(index, params, frame, recipe, output->instances);
+}
+#endif

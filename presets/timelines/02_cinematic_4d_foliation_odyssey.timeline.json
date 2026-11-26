@@ -1,0 +1,98 @@
+{
+  "id": "cinematic_4d_foliation_odyssey",
+  "title": "Autonomous 4D Foliation & Polytope Odyssey",
+  "description": "Deterministic cinematic demonstration executing continuous 4D hyperplane slicing, SO(4) Clifford rotor precession, and topological world morphs.",
+  "duration_sec": 36.0,
+  "loop": true,
+  "cues": [
+    {
+      "time_sec": 0.0,
+      "action": "NextWorld",
+      "value": 1.5,
+      "description": "Initial World Framing & Baseline Setup"
+    },
+    {
+      "time_sec": 3.0,
+      "action": "Toggle4DFoliationWave",
+      "value": 1.0,
+      "description": "Activate Dynamic 4D Spacetime Foliation Wave"
+    },
+    {
+      "time_sec": 6.0,
+      "action": "Cycle4DManifold",
+      "value": 0.0,
+      "description": "Cycle to Clifford Torus S1 x S1 Manifold"
+    },
+    {
+      "time_sec": 10.0,
+      "action": "NextWorld",
+      "value": 2.0,
+      "description": "Geodesic Homotopy Flight to Next World Topology"
+    },
+    {
+      "time_sec": 14.0,
+      "action": "Mutate",
+      "value": 0.25,
+      "description": "Perturb Geometric Inner Coordinates"
+    },
+    {
+      "time_sec": 18.0,
+      "action": "RandomizePalette",
+      "value": 1.5,
+      "description": "Dynamic Physical PBR Palette Drift"
+    },
+    {
+      "time_sec": 22.0,
+      "action": "NextWorld",
+      "value": 2.0,
+      "description": "Geodesic Homotopy Flight to 4D Polytope Sanctuary"
+    },
+    {
+      "time_sec": 26.0,
+      "action": "Cycle4DManifold",
+      "value": 0.0,
+      "description": "Cycle to 600-Cell Polytope Slicing"
+    },
+    {
+      "time_sec": 30.0,
+      "action": "Reset4DRotors",
+      "value": 0.0,
+      "description": "Restore SO(4) Isoclinic Rotors to Canonical Baseline"
+    },
+    {
+      "time_sec": 33.0,
+      "action": "ResetParameters",
+      "value": 1.5,
+      "description": "Return Morphological State to World Preset Baseline"
+    }
+  ],
+  "tracks": [
+    {
+      "channel": "latentW",
+      "keyframes": [
+        { "time": 0.0, "value": 0.0, "easing": "Smoothstep" },
+        { "time": 9.0, "value": 0.65, "easing": "Smoothstep" },
+        { "time": 18.0, "value": -0.65, "easing": "Smoothstep" },
+        { "time": 27.0, "value": 0.35, "easing": "Smoothstep" },
+        { "time": 36.0, "value": 0.0, "easing": "Smoothstep" }
+      ]
+    },
+    {
+      "channel": "rotorAlpha",
+      "keyframes": [
+        { "time": 0.0, "value": 0.5, "easing": "CubicInOut" },
+        { "time": 12.0, "value": 1.85, "easing": "CubicInOut" },
+        { "time": 24.0, "value": 3.40, "easing": "CubicInOut" },
+        { "time": 36.0, "value": 0.5, "easing": "CubicInOut" }
+      ]
+    },
+    {
+      "channel": "rotorBeta",
+      "keyframes": [
+        { "time": 0.0, "value": 0.5, "easing": "Linear" },
+        { "time": 18.0, "value": 2.20, "easing": "Linear" },
+        { "time": 36.0, "value": 0.5, "easing": "Linear" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+// -----------------------------------------------------------------------------
+// Component: Penrose Twistor Foliation & SO(4) Isoclinic World (Generator ID: 21)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_penrose_twistor_foliation(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    const uint activeCount = epi_world_active_count(recipe, 1280u);
+    const uint sourceIndex = min(
+        (uint)floor((convert_float(index) + 0.5f) * 1280.0f
+            / convert_float(activeCount)),
+        1279u);
+
+    // Organization: 20 chiral twistor ribbons (decagonal quasicrystal symmetry x 2 chiralities)
+    // each carrying 64 soliton torus knot cells along the Robinson null congruence.
+    const uint ribbons = 20u;
+    const uint pointsPerRibbon = 64u;
+    const uint ribbon = sourceIndex / pointsPerRibbon;
+    const uint point = sourceIndex % pointsPerRibbon;
+
+    const float tau = 6.28318530718f;
+    const float phi = 1.61803398875f; // Golden ratio
+    const float ribbonF = convert_float(ribbon);
+    const float pointF = convert_float(point);
+
+    // 1. Decagonal quasicrystal distribution & foliation angle on S^3
+    const float chirality = (ribbon % 2u == 0u) ? 1.0f : -1.0f;
+    const float decagonalAngle = floor(ribbonF * 0.5f) * (tau / 10.0f);
+    const float alpha = (floor(ribbonF * 0.5f) + 1.0f) * (1.57079632679f / 11.0f);
+    const float cosA = cos(alpha);
+    const float sinA = sin(alpha);
+
+    // Dynamic temporal and latent coordinate evolution
+    const float tempo = 0.38f + 1.4f * fabs(params->dynamics_seed.x);
+    const float evolution = frame->time * tempo;
+    const float u = pointF * (tau / convert_float(pointsPerRibbon));
+    
+    // Twistor null geodesic parameter v along the fiber with winding number 3 and Penrose twist
+    const float v = 3.0f * u * chirality + decagonalAngle * phi + params->latent_w * 0.618f + evolution * 0.32f;
+
+    // Coordinates on unit 3-sphere S^3 subset R^4 (norm is strictly 1.0)
+    const float4 ptS3 = (float4)(
+        cosA * cos(u),
+        cosA * sin(u),
+        sinA * cos(v),
+        sinA * sin(v)
+    );
+
+    // 2. Analytical 4D tangent vector on S^3: d(ptS3)/du
+    const float4 tangentS3 = (float4)(
+        -cosA * sin(u),
+         cosA * cos(u),
+        -3.0f * chirality * sinA * sin(v),
+         3.0f * chirality * sinA * cos(v)
+    );
+
+    // 3. SO(4) isoclinic double-rotation in R^4 (Left & Right Clifford rotors)
+    const float thetaL = params->rotor_alpha + frame->time * params->dynamics_seed.x * 0.22f;
+    const float thetaR = params->rotor_beta * chirality + frame->time * params->dynamics_seed.x * 0.14f;
+    const float phiL = params->rotor_theta_4d * 0.5f;
+    const float phiR = params->rotor_theta_4d * 0.5f;
+
+    float4 rot_p4 = epi_rotate_so4(ptS3, thetaL, thetaR, phiL, phiR);
+    float4 rot_t4 = epi_rotate_so4(tangentS3, thetaL, thetaR, phiL, phiR);
+
+    // Additional 4D Z-W hyperbolic tilt
+    if (fabs(params->rotor_theta_4d) > 1e-5f) {
+        const float cosT = cos(params->rotor_theta_4d * 0.5f);
+        const float sinT = sin(params->rotor_theta_4d * 0.5f);
+        const float zw_p_z = rot_p4.z * cosT - rot_p4.w * sinT;
+        const float zw_p_w = rot_p4.z * sinT + rot_p4.w * cosT;
+        rot_p4.z = zw_p_z;
+        rot_p4.w = zw_p_w;
+
+        const float zw_t_z = rot_t4.z * cosT - rot_t4.w * sinT;
+        const float zw_t_w = rot_t4.z * sinT + rot_t4.w * cosT;
+        rot_t4.z = zw_t_z;
+        rot_t4.w = zw_t_w;
+    }
+
+    // 4. Conformal stereographic projection: pi: S^3 -> R^3
+    const float kappa = 0.72f * clamp(params->topologyBlend, 0.20f, 0.95f);
+    const float denom = fmax(1.0f - kappa * rot_p4.w, 0.15f);
+    const float invDenom = 1.0f / denom;
+
+    const float worldScale = 4.8f * params->output_scale.x;
+    float3 position = (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * invDenom * worldScale;
+
+    // 5. Differential stereographic 3D tangent: d(pi(rot_p4))/du
+    float3 tangent3 = ((float3)(rot_t4.x, rot_t4.y, rot_t4.z) * denom
+                      + (float3)(rot_p4.x, rot_p4.y, rot_p4.z) * (kappa * rot_t4.w))
+                      * (invDenom * invDenom);
+    float tLen = length(tangent3);
+    tangent3 = (tLen > 1e-4f) ? (tangent3 / tLen) : (float3)(0.0f, 1.0f, 0.0f);
+
+    // 6. Penrose twistor helicity spin & phase-locking wave
+    const float wavePhase = 5.0f * u * chirality - evolution * 1.618f + decagonalAngle;
+    const float coherence = clamp(0.38f + 0.52f * params->topologyBlend + 0.18f * sin(wavePhase), 0.1f, 1.0f);
+
+    // 7. Orientation: align to fiber tangent, then spin twistor phase
+    const float4 alignToTangent = epi_world_align_y(tangent3);
+    const float spinPhase = v + evolution * 2.6f + params->latent_w * phi;
+    const float4 twistorSpin = epi_world_axis_rotation(tangent3, spinPhase * (0.85f + 0.35f * coherence));
+    const float4 orientation = epi_world_quaternion_multiply(twistorSpin, alignToTangent);
+
+    // 8. Scale & breathing
+    const float pulse = 0.5f + 0.5f * sin(spinPhase * 2.0f);
+    const float scale = params->output_scale.y
+        * (0.15f + 0.07f * cosA + 0.035f * pulse + 0.025f * coherence);
+
+    // 9. Thin-film iridescence & decagonal chromatic interference
+    const float phaseColour = (u / tau) + (ribbonF / convert_float(ribbons)) * phi
+        + params->pulse_material.z + frame->time * params->pulse_material.w;
+    float3 tint = epi_world_phase_colour(phaseColour, coherence);
+    // Twistor core hue modulation (electric violet / cyan / gold)
+    const float3 twistorCore = (chirality > 0.0f) ? (float3)(0.15f, 0.85f, 0.95f) : (float3)(0.95f, 0.45f, 0.85f);
+    tint = mix(twistorCore, tint, 0.70f);
+
+    const float radiance = 0.10f
+        + 0.48f * coherence * (0.40f + 0.60f * pulse)
+        + 0.14f * (1.0f - cosA);
+
+    instances[index].positionScale = (float4)(position, fmax(scale, 0.02f));
+    instances[index].orientation = orientation;
+    instances[index].tintEmission = (float4)(tint, radiance);
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = ribbon % recipe->materialBandCount;
+    instances[index].flags = 1u; // 4D projection enabled
+    instances[index].sourceIndex = sourceIndex;
+}
+
+#ifndef EPI_WORLD_GENERATE_DEFINED
+#define EPI_WORLD_GENERATE_DEFINED
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+
+    const uint activeInstanceCount = min(recipe->instanceBudget, 1280u);
+
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+
+    if (index >= activeInstanceCount) return;
+
+    epi_world_write_penrose_twistor_foliation(index, params, frame, recipe, output->instances);
+}
+#endif

@@ -1,0 +1,148 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_HYPERCUBE_TESSERACT (Generator ID: 10)
+// -----------------------------------------------------------------------------
+
+inline float4 epi_world_rotate_4d_isoclinic(float4 v, float t1, float t2) {
+    // Double isoclinic SO(4) rotation in two orthogonal planes (X-W and Y-Z)
+    const float c1 = cos(t1), s1 = sin(t1);
+    const float c2 = cos(t2), s2 = sin(t2);
+
+    return (float4)(
+        v.x * c1 - v.w * s1,
+        v.y * c2 - v.z * s2,
+        v.y * s2 + v.z * c2,
+        v.x * s1 + v.w * c1);
+}
+
+inline void epi_world_write_hypercube_tesseract(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // 4D Polychoron Hypercube Tesseract & Gluon Flux Mandala:
+    // 1024 instanced hyper-edges mapping a multi-shell SO(4) rotating hyper-lattice.
+    // 32 concentric/rotational hyper-cells x 32 edges per tesseract = 1024 instances.
+    const uint activeCount = epi_world_active_count(recipe, 1024u);
+    const uint sourceIndex = min((index * 1024u) / activeCount, 1023u);
+
+    const uint hyperCell = sourceIndex / 32u; // 0..31
+    const uint edgeId = sourceIndex % 32u;    // 0..31
+
+    // 4D edge decoding: 32 edges connecting the 16 vertices (+-1, +-1, +-1, +-1)
+    const uint dim = edgeId / 8u;   // 0..3 (direction axis of the edge)
+    const uint other = edgeId % 8u; // 0..7 (bits of other 3 coordinates)
+
+    const float b0 = (other & 1u) ? 1.0f : -1.0f;
+    const float b1 = (other & 2u) ? 1.0f : -1.0f;
+    const float b2 = (other & 4u) ? 1.0f : -1.0f;
+
+    float4 vA = (float4)(0.0f);
+    float4 vB = (float4)(0.0f);
+    if (dim == 0u) {
+        vA = (float4)(-1.0f, b0, b1, b2);
+        vB = (float4)( 1.0f, b0, b1, b2);
+    } else if (dim == 1u) {
+        vA = (float4)(b0, -1.0f, b1, b2);
+        vB = (float4)(b0,  1.0f, b1, b2);
+    } else if (dim == 2u) {
+        vA = (float4)(b0, b1, -1.0f, b2);
+        vB = (float4)(b0, b1,  1.0f, b2);
+    } else {
+        vA = (float4)(b0, b1, b2, -1.0f);
+        vB = (float4)(b0, b1, b2,  1.0f);
+    }
+
+    // Concentric hyper-shell radius and phase offset
+    const float cellF = convert_float(hyperCell);
+    const float shellRadius = 0.55f + 1.45f * (cellF / 31.0f);
+    vA *= shellRadius;
+    vB *= shellRadius;
+
+    // Double isoclinic SO(4) rotation angles
+    const float tempo = 0.45f + 0.65f * fabs(params->dynamics_seed.x);
+    const float phaseOffset = cellF * (6.28318530718f / 32.0f);
+    const float t1 = frame->time * tempo * 0.8f + phaseOffset + params->latent_w * 2.0f;
+    const float t2 = frame->time * tempo * 1.2944f + phaseOffset * 1.618034f;
+
+    vA = epi_world_rotate_4d_isoclinic(vA, t1, t2);
+    vB = epi_world_rotate_4d_isoclinic(vB, t1, t2);
+
+    // Stereographic projection from 4D to 3D with projection distance W_cam = 3.2
+    const float wCam = 3.2f;
+    const float distA = fmax(wCam - vA.w, 0.25f);
+    const float distB = fmax(wCam - vB.w, 0.25f);
+
+    const float3 pA = (vA.xyz / distA) * params->output_scale.xyz;
+    const float3 pB = (vB.xyz / distB) * params->output_scale.xyz;
+
+    const float3 edgeCenter = 0.5f * (pA + pB);
+    const float3 edgeDelta = pB - pA;
+    const float edgeLength = length(edgeDelta);
+    const float3 edgeDir = (edgeLength > 1.0e-5f) ? (edgeDelta / edgeLength) : (float3)(0.0f, 1.0f, 0.0f);
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: inner hypercube core frames (hyperCell < 8)
+    // Role 1 = Structure: intermediate 4D lattice flux tubes (8 <= hyperCell < 24)
+    // Role 2 = Accent: outer hypercube boundary & high-velocity QCD gluon flux nodes (hyperCell >= 24)
+    uint semanticRole = 1u;
+    if (hyperCell < 8u) {
+        semanticRole = 0u;
+    } else if (hyperCell >= 24u) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Dynamic phase colour and emission
+    const float hue = 0.58f + 0.28f * (cellF / 31.0f) + params->pulse_material.w * frame->time;
+    float3 tint = epi_world_phase_colour(hue, 0.92f);
+    if (semanticRole == 0u) {
+        // Core frame: polished hyper-gold / copper
+        tint = mix(tint, (float3)(0.98f, 0.72f, 0.28f), 0.75f);
+    } else if (semanticRole == 1u) {
+        // Intermediate flux tube: electric cyan / cobalt
+        tint = mix(tint, (float3)(0.15f, 0.72f, 0.98f), 0.65f);
+    } else {
+        // Outer QCD gluon flare: radiant magenta / violet
+        tint = mix(tint, (float3)(0.95f, 0.22f, 0.88f), 0.85f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (1.20f + 1.50f * sin(frame->time * 4.0f + cellF))
+        : ((semanticRole == 1u) ? 0.30f : 0.12f);
+
+    const float thickness = fmax(params->output_scale.y * 0.032f, 0.008f);
+    instances[index].positionScale = (float4)(edgeCenter, thickness);
+
+    // Anisotropic scaling along Y: stretch to match projected 3D edge length
+    instances[index].axisScale = (float4)(1.0f, (edgeLength / thickness) * 0.98f, 1.0f, 1.0f);
+    instances[index].orientation = epi_world_align_y(edgeDir);
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides:
+    if (semanticRole == 0u) {
+        instances[index].pbrOverride = (float4)(0.95f, 0.12f, 0.0f, 0.0f); // Polished hyper-gold
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.55f, 0.20f, 0.0f, 0.0f); // Semi-metallic flux tube
+    } else {
+        instances[index].pbrOverride = (float4)(0.90f, 0.06f, 0.0f, 0.0f); // Super-specular QCD flare
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_hypercube_tesseract(index, params, frame, recipe, output->instances);
+}
+#endif

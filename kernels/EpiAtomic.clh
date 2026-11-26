@@ -1,0 +1,42 @@
+#ifndef EPI_ATOMIC_CLH
+#define EPI_ATOMIC_CLH
+
+// -------------------------------------------------------------------------------------------------
+// Educational Annotation: OpenCL Global Atomics
+// -------------------------------------------------------------------------------------------------
+// OpenCL 1.2/3.0 lacks native support for atomic floating point operations.
+// These functions implement a lock-free Compare-And-Swap (CAS) loop using atomic_cmpxchg
+// over 32-bit unsigned integers to safely accumulate/min/max floating-point values 
+// across thousands of concurrent threads without corruption or race conditions.
+// -------------------------------------------------------------------------------------------------
+
+inline void atomic_add_f_global(volatile __global float *source, float operand) {
+    union { unsigned int intVal; float floatVal; } newVal;
+    union { unsigned int intVal; float floatVal; } prevVal;
+    do {
+        prevVal.floatVal = *source;
+        newVal.floatVal = prevVal.floatVal + operand;
+    } while (atomic_cmpxchg((volatile __global unsigned int *)source, prevVal.intVal, newVal.intVal) != prevVal.intVal);
+}
+
+inline void atomic_min_f_global(volatile __global float *source, float operand) {
+    union { unsigned int intVal; float floatVal; } newVal;
+    union { unsigned int intVal; float floatVal; } prevVal;
+    do {
+        prevVal.floatVal = *source;
+        if (operand >= prevVal.floatVal) return;
+        newVal.floatVal = operand;
+    } while (atomic_cmpxchg((volatile __global unsigned int *)source, prevVal.intVal, newVal.intVal) != prevVal.intVal);
+}
+
+inline void atomic_max_f_global(volatile __global float *source, float operand) {
+    union { unsigned int intVal; float floatVal; } newVal;
+    union { unsigned int intVal; float floatVal; } prevVal;
+    do {
+        prevVal.floatVal = *source;
+        if (operand <= prevVal.floatVal) return;
+        newVal.floatVal = operand;
+    } while (atomic_cmpxchg((volatile __global unsigned int *)source, prevVal.intVal, newVal.intVal) != prevVal.intVal);
+}
+
+#endif // EPI_ATOMIC_CLH

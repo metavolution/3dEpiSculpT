@@ -1,0 +1,72 @@
+#ifndef EPI_SCULPTURE_WORLD_COMMON_CLH
+#define EPI_SCULPTURE_WORLD_COMMON_CLH
+
+#define EPI_WORLD_GOLDEN_ANGLE 2.39996322972865332f
+
+inline float4 epi_world_y_rotation(float angle) {
+    const float halfAngle = 0.5f * angle;
+    return (float4)(0.0f, sin(halfAngle), 0.0f, cos(halfAngle));
+}
+
+// Quaternion helpers use the same xyzw convention as WorldInstanceGpu.
+inline float4 epi_world_axis_rotation(float3 axis, float angle) {
+    const float axisLengthSquared = dot(axis, axis);
+    if (axisLengthSquared <= 1.0e-8f) {
+        return (float4)(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+    const float halfAngle = 0.5f * angle;
+    const float3 unitAxis = axis * rsqrt(axisLengthSquared);
+    return (float4)(unitAxis * sin(halfAngle), cos(halfAngle));
+}
+
+inline float4 epi_world_quaternion_multiply(float4 lhs, float4 rhs) {
+    return (float4)(
+        lhs.w * rhs.xyz + rhs.w * lhs.xyz + cross(lhs.xyz, rhs.xyz),
+        lhs.w * rhs.w - dot(lhs.xyz, rhs.xyz));
+}
+
+inline float4 epi_world_align_y(float3 direction) {
+    const float3 d = normalize(direction);
+    const float s = sqrt(fmax(2.0f * (1.0f + d.y), 1.0e-6f));
+    return (float4)(d.z / s, 0.0f, -d.x / s, 0.5f * s);
+}
+
+inline float3 epi_world_phase_colour(float phase, float coherence) {
+    const float hue = phase - floor(phase);
+    const float3 wave = 0.5f + 0.5f * cos(
+        6.28318530718f * (hue + (float3)(0.0f, 0.3333333f, 0.6666667f)));
+    return mix(wave * 0.55f, wave, clamp(coherence, 0.0f, 1.0f));
+}
+
+inline uint epi_world_active_count(const __constant WorldRecipeGpu* recipe,
+                                   uint fullCount) {
+    return max(1u, min(recipe->instanceBudget, fullCount));
+}
+
+// [EDUCATIONAL ANNOTATION: Universal Parallel Work-Item Boundary]
+// In GPU execution, work items are scheduled across 256-wide SIMD warps.
+// Work item index 0 uniquely initializes the snapshot frame metadata and
+// writes the immutable ABI header for the Vulkan presentation bridge.
+// Any work items whose index exceeds the active instance budget return early,
+// ensuring memory safety and preventing out-of-bounds GPU writes.
+inline bool epi_world_begin_generation(
+    const uint index,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    const uint activeInstanceCount = min(recipe->instanceBudget, (uint)EPI_SCULPT_WORLD_MAX_INSTANCE_COUNT);
+    if (index == 0u) {
+        output->frame.abiVersion = EPI_SCULPT_WORLD_ABI_VERSION;
+        output->frame.byteSize = EPI_SCULPT_WORLD_FRAME_BYTES;
+        output->frame.generation = frame->generation;
+        output->frame.activeInstanceCount = activeInstanceCount;
+        output->frame.time = frame->time;
+        output->frame.deltaSeconds = frame->delta_seconds;
+        output->frame.morph = frame->morph;
+        output->frame.reserved = 0.0f;
+        output->recipe = *recipe;
+    }
+    return index < activeInstanceCount;
+}
+
+#endif // EPI_SCULPTURE_WORLD_COMMON_CLH

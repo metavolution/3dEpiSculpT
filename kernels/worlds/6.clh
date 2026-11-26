@@ -1,0 +1,104 @@
+// -----------------------------------------------------------------------------
+// Component: EPI_WORLD_AMMANN_BEENKER_FIELD (Generator ID: 6)
+// -----------------------------------------------------------------------------
+
+inline void epi_world_write_ammann_beenker(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldInstanceGpu* instances) {
+    // 8-fold Ammann-Beenker Aperiodic Quasicrystal Field.
+    // Dual-grid cut-and-project mapping parameterized by the silver ratio (1 + sqrt(2) ~ 2.41421356).
+    const uint activeCount = epi_world_active_count(recipe, 768u);
+    const uint columnCount = min(32u, max(1u,
+        (uint)ceil(sqrt(convert_float(activeCount) * (4.0f / 3.0f)))));
+    const uint rowCount = (activeCount + columnCount - 1u) / columnCount;
+    const uint column = index % columnCount;
+    const uint row = index / columnCount;
+
+    const float gx = 32.0f * ((convert_float(column) + 0.5f) / convert_float(columnCount) - 0.5f);
+    const float gy = 24.0f * ((convert_float(row) + 0.5f) / convert_float(rowCount) - 0.5f);
+    const float evolution = frame->time * (0.12f + 0.18f * fabs(params->dynamics_seed.x));
+    const float phase = evolution + params->latent_w * 2.41421356f;
+
+    // Dual-grid irrational projection:
+    const float p0 = 0.35f * (gx + gy);
+    const float p1 = 0.35f * (gx - gy);
+    const float x = (p0 + 0.62f * cos(0.78539816339f * gy + phase)) * params->output_scale.x;
+    const float z = (p1 + 0.62f * sin(0.78539816339f * gx - phase)) * params->output_scale.x;
+    const float radial = sqrt(x * x + z * z);
+    const float theta = atan2(z, x);
+
+    // 8-fold rotational symmetry harmonic and Hofstadter fractal resonance:
+    const float eightfold = 0.5f + 0.5f * cos(8.0f * theta + phase * 0.5f);
+    const float hofstadter = 0.5f * (cos(2.41421356f * x + phase) + cos(2.41421356f * z - phase));
+    const float hofstadterEnergy = clamp(fabs(hofstadter), 0.0f, 1.0f);
+    const float y = (0.24f * sin(radial * 2.4142f - phase * 1.5f) + 0.35f * hofstadter) * params->output_scale.y;
+
+    // Semantic Material Role classification:
+    // Role 0 = Form: central Ammann octagonal star core (radial < 3.2 and high 8-fold coherence).
+    // Role 1 = Structure: intermediate aperiodic tiling weave.
+    // Role 2 = Accent: Hofstadter energy resonance peaks.
+    uint semanticRole = 1u;
+    if (radial < 3.2f * params->output_scale.x && eightfold > 0.62f) {
+        semanticRole = 0u;
+    } else if (hofstadterEnergy > 0.72f || eightfold > 0.88f) {
+        semanticRole = 2u;
+    }
+    const uint materialBand = min(semanticRole, recipe->materialBandCount - 1u);
+
+    // Dynamic phase colour and emissive radiance:
+    float3 tint = epi_world_phase_colour(0.125f * radial + 0.25f * eightfold + params->pulse_material.w * frame->time, 0.85f);
+    if (semanticRole == 0u) {
+        // Core star: polished platinum silver
+        tint = mix(tint, (float3)(0.88f, 0.92f, 0.98f), 0.70f);
+    } else if (semanticRole == 1u) {
+        // Tiling field: imperial jade green
+        tint = mix(tint, (float3)(0.18f, 0.88f, 0.62f), 0.60f);
+    } else {
+        // Energy peak: radiant golden resonance flare
+        tint = mix(tint, (float3)(1.0f, 0.85f, 0.30f), 0.80f);
+    }
+
+    const float radiance = (semanticRole == 2u)
+        ? (0.85f + 1.25f * hofstadterEnergy)
+        : ((semanticRole == 0u) ? 0.08f : 0.22f);
+
+    const float baseScale = fmax(params->output_scale.y * (0.18f + 0.06f * eightfold), 0.02f);
+    instances[index].positionScale = (float4)(x, y, z, baseScale);
+
+    // Anisotropic scaling for tile geometry: flat in Y, wide in X/Z:
+    instances[index].axisScale = (float4)(1.25f, 0.22f, 1.25f, 1.0f);
+    // 8-fold discrete/continuous orientation around Y:
+    const float orientationAngle = 0.78539816339f * floor(8.0f * theta / 6.2831853f + 0.5f) + phase * 0.2f;
+    instances[index].orientation = epi_world_y_rotation(orientationAngle);
+    instances[index].tintEmission = (float4)(tint, radiance);
+
+    // PBR Overrides:
+    if (semanticRole == 0u) {
+        instances[index].pbrOverride = (float4)(0.95f, 0.12f, 0.0f, 0.0f); // Platinum silver
+    } else if (semanticRole == 1u) {
+        instances[index].pbrOverride = (float4)(0.35f, 0.25f, 0.30f, 0.0f); // Translucent jade
+    } else {
+        instances[index].pbrOverride = (float4)(0.90f, 0.10f, 0.0f, 0.0f); // Resonant gold
+    }
+
+    instances[index].primitiveId = recipe->primitiveId;
+    instances[index].materialBand = materialBand;
+    instances[index].flags = EPI_SCULPT_WORLD_ANISOTROPIC_SCALE_FLAG;
+    instances[index].sourceIndex = index;
+}
+
+#ifdef EPI_ACTIVE_GENERATOR_ID
+inline void epi_world_generate(
+    const uint index,
+    const __constant SculptureProgramParamsGpu* params,
+    const __constant SculptureFrameGpu* frame,
+    const __constant WorldRecipeGpu* recipe,
+    __global WorldSnapshotGpu* output) {
+    if (!epi_world_begin_generation(index, frame, recipe, output)) return;
+
+    epi_world_write_ammann_beenker(index, params, frame, recipe, output->instances);
+}
+#endif
